@@ -2,43 +2,36 @@
 Utility primitives shared across the trading system.
 
 This module exposes:
+- BaseEngine (see `base_engine.py`)
 - Event type constants (see `events.py`)
 - Intent type constants (see `intents.py`)
 """
 
+from .base_engine import BaseEngine
 from .events import (
-    EVENT_TICK,
-    EVENT_ORDER,
-    EVENT_TRADE,
-    EVENT_POSITION,
-    EVENT_ACCOUNT,
-    EVENT_BALANCE,
+    EVENT_BAR,
     EVENT_LOG,
+    EVENT_ORDER,
     EVENT_RISK_ALERT,
     EVENT_TIMER,
+    EVENT_TRADE,
 )
 from .intents import (
-    INTENT_PLACE_ORDER,
     INTENT_CANCEL_ORDER,
-    INTENT_SYNC_POSITIONS,
-    INTENT_SHUTDOWN,
+    INTENT_LOG,
+    INTENT_PLACE_ORDER,
 )
 
 __all__ = [
-    # Events
-    "EVENT_TICK",
-    "EVENT_ORDER",
-    "EVENT_TRADE",
-    "EVENT_POSITION",
-    "EVENT_ACCOUNT",
-    "EVENT_BALANCE",
+    "BaseEngine",
+    "EVENT_BAR",
     "EVENT_LOG",
+    "EVENT_ORDER",
     "EVENT_RISK_ALERT",
     "EVENT_TIMER",
-    # Intents
-    "INTENT_PLACE_ORDER",
+    "EVENT_TRADE",
     "INTENT_CANCEL_ORDER",
-    "INTENT_SYNC_POSITIONS",
-    "INTENT_SHUTDOWN",
+    "INTENT_LOG",
+    "INTENT_PLACE_ORDER",
 ]
 

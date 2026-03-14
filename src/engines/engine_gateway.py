@@ -1,30 +1,23 @@
 """
-Engine-prefixed gateway engine module.
-
-This engine is responsible for both:
-- REST-based order placement/cancellation
-- REST-based market data polling (ticks) for symbols.
-
-There is **no long-lived connection state** in this design: every
-interaction with the external vendor is assumed to be a stateless
-HTTP request/response.
+Gateway engine: REST I/O for orders and market data. Fetches in on_timer() and emits EVENT_BAR;
+market engine receives bars and updates symbol cache and indicators.
 """
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Optional
 
-from src.utilities.object import SymbolData, TickData
+from src.utilities.base_engine import BaseEngine
+from src.utilities.events import EVENT_BAR
+from src.utilities.object import BarData
 
 
-class GatewayEngine:
-    """Unified REST gateway and market data engine (skeleton)."""
+class GatewayEngine(BaseEngine):
+    """Vendor adapter: send_order/cancel_order; on_timer() fetches and puts EVENT_BAR for each trading_pairs."""
 
-    def __init__(self) -> None:
-        # In-memory cache of latest symbol state keyed by symbol.
-        self._symbols: Dict[str, SymbolData] = {}
-
-    # ---------------- trading ----------------
+    def __init__(self, main_engine=None, engine_name: str = "Gateway", trading_pairs: Optional[list[str]] = None) -> None:
+        super().__init__(main_engine=main_engine, engine_name=engine_name)
+        self.trading_pairs: list[str] = list(trading_pairs) if trading_pairs else []
 
     def send_order(self, order_request) -> str | None:
         """Send an order to the exchange."""
@@ -34,36 +27,11 @@ class GatewayEngine:
         """Cancel an existing order."""
         pass
 
-    # ---------------- market data ----------------
+    def on_timer(self) -> None:
+        """Called each timer tick. Override to poll REST and call put_bar(BarData(...)) when a new candle is ready."""
+        pass
 
-    def on_tick(self, event) -> None:
-        """
-        Handle incoming tick event and update `SymbolData` cache.
-
-        `event.data` is expected to be a `TickData` instance.
-        """
-        data = event.data
-        if not isinstance(data, TickData):
-            return
-
-        symbol = data.symbol
-        existing = self._symbols.get(symbol)
-
-        if existing is None:
-            self._symbols[symbol] = SymbolData(
-                symbol=symbol,
-                last_price=data.last_price,
-                bid_price=data.bid_price,
-                ask_price=data.ask_price,
-                ts=data.ts,
-            )
-        else:
-            existing.last_price = data.last_price
-            existing.bid_price = data.bid_price
-            existing.ask_price = data.ask_price
-            existing.ts = data.ts
-
-    def get_symbol(self, symbol: str) -> SymbolData | None:
-        """Return latest `SymbolData` for a symbol, if known."""
-        return self._symbols.get(symbol)
-
+    def put_bar(self, bar_data: BarData) -> None:
+        """Emit EVENT_BAR so the event engine routes to market engine."""
+        if self.main_engine:
+            self.main_engine.put_event(EVENT_BAR, bar_data)

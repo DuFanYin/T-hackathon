@@ -1,8 +1,5 @@
 """
-Engine-prefixed main engine module.
-
-This file mirrors the content of the previous `main_engine.py` but
-uses the `engine_*.py` naming convention to align with OTrader.
+Main engine: composition root and façade for the trading system.
 """
 
 from __future__ import annotations
@@ -11,52 +8,65 @@ from typing import Optional
 
 from .engine_event import Event, EventEngine
 from .engine_gateway import GatewayEngine
+from .engine_market import MarketEngine
 from .engine_position import PositionEngine
 from .engine_risk import RiskEngine
 from .engine_strategy import StrategyEngine
 
 
+# Hard-coded trading pairs; market and gateway auto-create from this list.
+TRADING_PAIRS = ["BTCUSDT", "ETHUSDT"]
+
+
 class MainEngine:
-    """
-    Root object that wires together long‑lived engines and exposes a simple façade.
+    """Builds all engines, starts the event loop, and exposes put_event, handle_intent, send_order, cancel_order."""
 
-    It is intentionally minimal at this stage:
-    - Event loop startup/shutdown
-    - Construction of engine singletons
-    - Thin pass‑throughs for connectivity and order flow
-    """
+    def __init__(self, event_engine: Optional[EventEngine] = None, trading_pairs: Optional[list[str]] = None) -> None:
+        self.trading_pairs: list[str] = trading_pairs if trading_pairs is not None else list(TRADING_PAIRS)
 
-    def __init__(self, event_engine: Optional[EventEngine] = None) -> None:
-        # Shared event bus for the whole process
-        self.event_engine: EventEngine = event_engine or EventEngine()
+        self.event_engine: EventEngine = event_engine or EventEngine(main_engine=self)
+        if event_engine is not None:
+            self.event_engine.set_main_engine(self)
 
-        # Core engines (their internal implementations can evolve independently)
-        self.gateway_engine = GatewayEngine()
-        self.strategy_engine = StrategyEngine()
-        self.position_engine = PositionEngine()
-        self.risk_engine = RiskEngine()
+        self.market_engine = MarketEngine(main_engine=self, trading_pairs=self.trading_pairs)
+        self.gateway_engine = GatewayEngine(main_engine=self, trading_pairs=self.trading_pairs)
+        self.strategy_engine = StrategyEngine(main_engine=self)
+        self.position_engine = PositionEngine(main_engine=self)
+        self.risk_engine = RiskEngine(main_engine=self)
 
-        # Let the event engine configure all routing based on this main engine
-        self.event_engine.configure(self)
         self.event_engine.start()
+
+    def add_strategy(self, strategy_name: str, trading_pair: str) -> None:
+        """Add a strategy for the trading pair. strategy_name is the class name (from AVAILABLE_STRATEGIES)."""
+        self.strategy_engine.add_strategy_for_pair(strategy_name, trading_pair)
+
+    def get_strategy(self, strategy_name: str):
+        """Return the strategy instance with the given name (e.g. Strat1Pine_BTCUSDT), or None."""
+        return self.strategy_engine.get_strategy(strategy_name)
+
+    def init_strategy(self, strategy_name: str) -> None:
+        """Call on_init() on the strategy."""
+        self.strategy_engine.init_strategy(strategy_name)
+
+    def start_strategy(self, strategy_name: str) -> None:
+        """Start the strategy (independent start control)."""
+        self.strategy_engine.start_strategy(strategy_name)
+
+    def stop_strategy(self, strategy_name: str) -> None:
+        """Stop the strategy (independent stop control)."""
+        self.strategy_engine.stop_strategy(strategy_name)
 
     # ------------------------------------------------------------------
     # Connectivity façade
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """
-        Establish connections to external exchanges through the gateway engine.
-
-        The concrete behavior is implemented inside `GatewayEngine.connect`.
-        """
+        """Delegate to gateway (if it implements connect)."""
         if hasattr(self.gateway_engine, "connect"):
             self.gateway_engine.connect()
 
     def disconnect(self) -> None:
-        """
-        Close connections to external exchanges and stop the event engine.
-        """
+        """Delegate to gateway and stop the event engine."""
         if hasattr(self.gateway_engine, "disconnect"):
             self.gateway_engine.disconnect()
 
@@ -67,20 +77,13 @@ class MainEngine:
     # ------------------------------------------------------------------
 
     def send_order(self, order_request: object) -> Optional[str]:
-        """
-        Forward an order request to the gateway.
-
-        `order_request` is intentionally kept generic for now; later it can become
-        a typed dataclass (symbol, side, qty, price, type, etc.).
-        """
+        """Forward an order request to the gateway; returns order_id or None."""
         if not hasattr(self.gateway_engine, "send_order"):
             return None
         return self.gateway_engine.send_order(order_request)  # type: ignore[no-any-return]
 
     def cancel_order(self, cancel_request: object) -> None:
-        """
-        Forward a cancel request to the gateway.
-        """
+        """Forward a cancel request to the gateway."""
         if hasattr(self.gateway_engine, "cancel_order"):
             self.gateway_engine.cancel_order(cancel_request)
 
@@ -89,7 +92,7 @@ class MainEngine:
     # ------------------------------------------------------------------
 
     def put_event(self, event_type: str, data: object | None = None) -> None:
-        """Utility to publish an event into the shared event engine."""
+        """Enqueue an event on the event engine."""
         self.event_engine.put(Event(event_type, data))
 
     # ------------------------------------------------------------------
@@ -97,6 +100,6 @@ class MainEngine:
     # ------------------------------------------------------------------
 
     def handle_intent(self, intent_type: str, payload: object | None = None) -> object | None:
-        """Thin wrapper over `EventEngine.handle_intent`."""
+        """Delegate to the event engine's intent handler."""
         return self.event_engine.handle_intent(intent_type, payload)
 

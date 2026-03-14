@@ -7,7 +7,7 @@ these simple data models as its `Event.data` payload.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
@@ -21,7 +21,7 @@ class SymbolData:
     Aggregated state for a single traded symbol.
 
     This is the canonical view that:
-    - `MarketDataEngine` updates from incoming ticks
+    - `MarketEngine` updates from bars (last_price from bar close)
     - `StrategyEngine` reads for trading decisions
     - `PositionEngine` may reference for pricing/PnL
     """
@@ -34,17 +34,17 @@ class SymbolData:
     ts: Optional[datetime] = None
 
 
-# ---------------- TICK ----------------
-
+# ---------------- BAR ----------------
 
 @dataclass(slots=True)
-class TickData:
-    """Raw market data snapshot for a single symbol (one event)."""
+class BarData:
+    """OHLC bar for a symbol (one candle)."""
 
     symbol: str
-    last_price: float
-    bid_price: Optional[float] = None
-    ask_price: Optional[float] = None
+    open: float
+    high: float
+    low: float
+    close: float
     volume: Optional[float] = None
     ts: Optional[datetime] = None
 
@@ -66,6 +66,7 @@ class OrderRequest:
     price: float
     order_type: str = "LIMIT"  # e.g. "LIMIT", "MARKET"
     client_order_id: Optional[str] = None
+    strategy_name: Optional[str] = None  # for position attribution
     extra: Optional[dict[str, Any]] = None
 
 
@@ -93,7 +94,38 @@ class OrderData:
     quantity: float
     price: float
     status: str  # e.g. "NEW", "PARTIALLY_FILLED", "FILLED", "CANCELLED"
+    strategy_name: Optional[str] = None  # for position attribution
     ts: Optional[datetime] = None
+
+
+# ---------------- POSITION (crypto: simple per-symbol) ----------------
+
+
+@dataclass(slots=True)
+class PositionData:
+    """Single-symbol position for crypto; quantity is always >= 0 (long only, no short)."""
+
+    symbol: str
+    quantity: float = 0.0  # always >= 0
+    avg_cost: float = 0.0
+    cost_value: float = 0.0
+    realized_pnl: float = 0.0
+    mid_price: float = 0.0  # mark price for unrealized PnL
+
+    def current_value(self) -> float:
+        return self.quantity * self.mid_price if self.mid_price else 0.0
+
+
+@dataclass(slots=True)
+class StrategyHolding:
+    """Per-strategy holdings: positions by symbol + summary (crypto, no combos)."""
+
+    positions: dict[str, PositionData] = field(default_factory=dict)  # symbol -> position
+    total_cost: float = 0.0
+    current_value: float = 0.0
+    unrealized_pnl: float = 0.0
+    realized_pnl: float = 0.0
+    pnl: float = 0.0
 
 
 # ---------------- TRADE ----------------
@@ -109,6 +141,7 @@ class TradeData:
     side: str  # "BUY" / "SELL"
     quantity: float
     price: float
+    strategy_name: Optional[str] = None  # for position attribution when position engine has no on_order
     ts: Optional[datetime] = None
 
 
@@ -152,12 +185,14 @@ class TimerData:
 
 
 __all__ = [
+    "BarData",
     "SymbolData",
-    "TickData",
     "OrderRequest",
     "CancelOrderRequest",
     "OrderData",
     "TradeData",
+    "PositionData",
+    "StrategyHolding",
     "LogData",
     "RiskAlertData",
     "TimerData",

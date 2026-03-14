@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package thackathon.grpc;
+
+// Dummy service definitions for dashboard and control.
+// Regenerate Python stubs with: python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. service.proto
+
+service DashboardControl {
+  // Control: send intents (place/cancel order, log)
+  rpc SendOrder(OrderRequest) returns (OrderReply);
+  rpc CancelOrder(CancelRequest) returns (CancelReply);
+  rpc Log(LogRequest) returns (LogReply);
+
+  // Dashboard: query state
+  rpc GetPositions(PositionsRequest) returns (PositionsReply);
+  rpc GetSymbol(SymbolRequest) returns (SymbolReply);
+  rpc StreamLogs(StreamLogsRequest) returns (stream LogEntry);
+}
+
+message OrderRequest {
+  string symbol = 1;
+  string side = 2;
+  double quantity = 3;
+  double price = 4;
+}
+
+message OrderReply {
+  string order_id = 1;
+  string error = 2;
+}
+
+message CancelRequest {
+  string order_id = 1;
+}
+
+message CancelReply {
+  bool ok = 1;
+  string error = 2;
+}
+
+message LogRequest {
+  string message = 1;
+  int32 level = 2;
+}
+
+message LogReply {}
+
+message PositionsRequest {}
+
+message PositionsReply {
+  repeated Position positions = 1;
+}
+
+message Position {
+  string symbol = 1;
+  double size = 2;
+  double avg_price = 3;
+}
+
+message SymbolRequest {
+  string symbol = 1;
+}
+
+message SymbolReply {
+  string symbol = 1;
+  double last_price = 2;
+  double bid_price = 3;
+  double ask_price = 4;
+}
+
+message StreamLogsRequest {}
+
+message LogEntry {
+  string message = 1;
+  int32 level = 2;
+  int64 ts = 3;
+}
