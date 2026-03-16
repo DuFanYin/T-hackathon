@@ -10,10 +10,11 @@ if TYPE_CHECKING:
     from src.strategies.template import StrategyTemplate
 
 # Hard-coded available strategies: name -> class. Add new strategy classes here.
-from src.strategies.factory import Strat1Pine
+from src.strategies.factory import Strat1Pine, Strat2Momentum
 
 AVAILABLE_STRATEGIES: Dict[str, Type] = {
     "Strat1Pine": Strat1Pine,
+    "Strat2Momentum": Strat2Momentum,
 }
 
 
@@ -35,6 +36,10 @@ class StrategyEngine(BaseEngine):
         setting = {"symbol": trading_pair}
         strategy = strategy_class(self.main_engine, strategy_name=name, setting=setting)
         self.add_strategy(strategy)
+
+    def add_strategy(self, strategy: "StrategyTemplate") -> None:
+        """Register a strategy instance so it receives on_timer, on_order, on_trade."""
+        self._strategies.append(strategy)
 
     def get_strategy(self, strategy_name: str) -> "StrategyTemplate | None":
         """Return the strategy instance with the given name, or None."""
