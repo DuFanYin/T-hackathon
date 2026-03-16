@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-End-to-end smoke test: MainEngine + Strat2Momentum integration.
+End-to-end smoke test: MainEngine + strategy integration.
 
-Verifies: strategy registration, init, start, timer ticks, Binance fetch,
-reconciliation logging, and graceful stop.
+Uses a real trading pair name (e.g. BTCUSDT) for the strategy instance name.
 
 Run: python smoke_test.py
 """
@@ -18,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def main() -> int:
     print("=== T-hackathon Smoke Test ===\n")
+    pair = "BTCUSDT"
 
     # 1. Imports
     print("1. Importing MainEngine and Strat2Momentum...")
@@ -47,9 +47,9 @@ def main() -> int:
     print("   OK\n")
 
     # 4. Add Strat2Momentum
-    print("4. Adding Strat2Momentum (ROTATION)...")
+    print(f"4. Adding Strat2Momentum ({pair})...")
     try:
-        main.add_strategy("Strat2Momentum", "ROTATION")
+        main.add_strategy("Strat2Momentum", pair)
     except Exception as e:
         print(f"   FAIL: {e}")
         return 1
@@ -57,7 +57,7 @@ def main() -> int:
 
     # 5. Get strategy and verify
     print("5. Verifying strategy instance...")
-    strat = main.get_strategy("Strat2Momentum_ROTATION")
+    strat = main.get_strategy(f"Strat2Momentum_{pair}")
     if strat is None:
         print("   FAIL: Strategy not found")
         return 1
@@ -69,8 +69,8 @@ def main() -> int:
     # 6. Init and start strategy
     print("6. Initializing and starting strategy...")
     try:
-        main.init_strategy("Strat2Momentum_ROTATION")
-        main.start_strategy("Strat2Momentum_ROTATION")
+        main.init_strategy(f"Strat2Momentum_{pair}")
+        main.start_strategy(f"Strat2Momentum_{pair}")
     except Exception as e:
         print(f"   FAIL: {e}")
         return 1
@@ -84,7 +84,7 @@ def main() -> int:
     # 8. Stop strategy and disconnect
     print("\n8. Stopping strategy and disconnecting...")
     try:
-        main.stop_strategy("Strat2Momentum_ROTATION")
+        main.stop_strategy(f"Strat2Momentum_{pair}")
         main.disconnect()
     except Exception as e:
         print(f"   FAIL: {e}")

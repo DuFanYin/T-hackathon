@@ -11,12 +11,13 @@ from time import sleep
 from typing import Any, TYPE_CHECKING
 
 from src.utilities.base_engine import BaseEngine
-from src.utilities.events import EVENT_BAR, EVENT_LOG, EVENT_ORDER, EVENT_RISK_ALERT, EVENT_TIMER, EVENT_TRADE
+from src.utilities.events import EVENT_BAR, EVENT_LOG, EVENT_ORDER, EVENT_RISK_ALERT, EVENT_TIMER
 from src.utilities.intents import (
     INTENT_CANCEL_ORDER,
     INTENT_LOG,
     INTENT_PLACE_ORDER,
 )
+from src.utilities.object import CancelOrderRequest, OrderRequest
 
 if TYPE_CHECKING:
     from .engine_main import MainEngine
@@ -70,8 +71,6 @@ class EventEngine(BaseEngine):
             self._handle_bar(event)
         elif etype == EVENT_ORDER:
             self._handle_order(event)
-        elif etype == EVENT_TRADE:
-            self._handle_trade(event)
         elif etype == EVENT_LOG:
             self._handle_log(event)
         elif etype == EVENT_RISK_ALERT:
@@ -134,15 +133,9 @@ class EventEngine(BaseEngine):
     def _handle_order(self, event: Event) -> None:
         me = self.main_engine
         assert me is not None
+        me.position_engine.on_order(event)
         me.strategy_engine.on_order(event)
         me.risk_engine.on_order(event)
-
-    def _handle_trade(self, event: Event) -> None:
-        me = self.main_engine
-        assert me is not None
-        me.position_engine.on_trade(event)
-        me.strategy_engine.on_trade(event)
-        me.risk_engine.on_trade(event)
 
     def _handle_log(self, event: Event) -> None:
         msg = getattr(event.data, "msg", None) or str(event.data)
@@ -169,9 +162,40 @@ class EventEngine(BaseEngine):
         me = self.main_engine
 
         if intent_type == INTENT_PLACE_ORDER:
-            return me.send_order(payload)
+            data = payload
+            if isinstance(data, OrderRequest):
+                price = None if str(data.order_type).upper() == "MARKET" else float(data.price)
+                resp = me.place_order(
+                    symbol=data.symbol,
+                    side=data.side,
+                    quantity=float(data.quantity),
+                    price=price,
+                    order_type=data.order_type,
+                )
+                if isinstance(resp, dict) and resp.get("Success") is False:
+                    return None
+                order_id = None
+                if isinstance(resp, dict):
+                    order_id = resp.get("order_id") or resp.get("orderId")
+                    if order_id is None and isinstance(resp.get("OrderDetail"), dict):
+                        order_id = resp["OrderDetail"].get("OrderID")
+
+                if order_id is not None:
+                    oid = str(order_id)
+                    if getattr(data, "strategy_name", None):
+                        me.gateway_engine.register_order(
+                            strategy_name=str(data.strategy_name),
+                            order_id=oid,
+                            symbol=str(data.symbol),
+                            side=str(data.side),
+                        )
+                    return oid
+                return None
+            return None
         if intent_type == INTENT_CANCEL_ORDER:
-            me.cancel_order(payload)
+            data = payload
+            if isinstance(data, CancelOrderRequest):
+                me.cancel_order(order_id=data.order_id, symbol=data.symbol)
             return None
         if intent_type == INTENT_LOG:
             # Treat payload as log message and emit a LOG event

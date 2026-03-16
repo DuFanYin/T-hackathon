@@ -14,7 +14,6 @@ from .events import (
     EVENT_ORDER,
     EVENT_RISK_ALERT,
     EVENT_TIMER,
-    EVENT_TRADE,
 )
 from .intents import (
     INTENT_CANCEL_ORDER,
@@ -29,7 +28,6 @@ __all__ = [
     "EVENT_ORDER",
     "EVENT_RISK_ALERT",
     "EVENT_TIMER",
-    "EVENT_TRADE",
     "INTENT_CANCEL_ORDER",
     "INTENT_LOG",
     "INTENT_PLACE_ORDER",

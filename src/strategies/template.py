@@ -64,16 +64,9 @@ class StrategyTemplate:
         side = getattr(data, "side", "")
         qty = getattr(data, "quantity", 0)
         price = getattr(data, "price", 0.0)
+        filled = getattr(data, "filled_avg_price", None) or price
         status = getattr(data, "status", "")
-        self.write_log(f"Order {order_id}: {side} {qty} @ {price} [{status}] {symbol}")
-
-    def on_trade(self, event: Any) -> None:
-        data = getattr(event, "data", event)
-        trade_id = getattr(data, "trade_id", "")
-        side = getattr(data, "side", "")
-        qty = getattr(data, "quantity", 0)
-        price = getattr(data, "price", 0.0)
-        self.write_log(f"Trade {trade_id}: {side} {qty} @ {price}")
+        self.write_log(f"Order {order_id}: {side} {qty} @ {filled} [{status}] {symbol}")
 
     # ---------- override these ----------
 

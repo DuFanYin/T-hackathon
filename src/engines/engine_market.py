@@ -22,16 +22,12 @@ class MarketEngine(BaseEngine):
         self,
         main_engine: "MainEngine | None" = None,
         engine_name: str = "Market",
-        trading_pairs: Optional[List[str]] = None,
     ) -> None:
         super().__init__(main_engine=main_engine, engine_name=engine_name)
         self._max_bars_per_symbol = 64
         self._symbols: Dict[str, SymbolData] = {}
         self._bars: Dict[str, deque[BarData]] = {}
         self._bar_count: Dict[str, int] = {}
-        for symbol in trading_pairs or []:
-            self._bars[symbol] = deque(maxlen=self._max_bars_per_symbol)
-            self._bar_count[symbol] = 0
 
     def on_bar(self, event) -> None:
         """Update bar buffer and SymbolData from EVENT_BAR payload (BarData)."""
@@ -53,6 +49,19 @@ class MarketEngine(BaseEngine):
     def get_symbol(self, symbol: str) -> SymbolData | None:
         """Return cached SymbolData for the symbol (last_price from latest bar close)."""
         return self._symbols.get(symbol)
+
+    def set_symbols(self, symbols: List[str]) -> None:
+        """
+        Hint the market engine which symbols will be traded.
+
+        This pre-creates bar buffers and counters for the given symbols, but does not
+        clear existing data. Bars are still accepted lazily for any symbol.
+        """
+        for symbol in symbols:
+            if symbol not in self._bars:
+                self._bars[symbol] = deque(maxlen=self._max_bars_per_symbol)
+            if symbol not in self._bar_count:
+                self._bar_count[symbol] = 0
 
     # ---------- bars and indicators ----------
 

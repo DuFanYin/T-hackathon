@@ -10,11 +10,12 @@ if TYPE_CHECKING:
     from src.strategies.template import StrategyTemplate
 
 # Hard-coded available strategies: name -> class. Add new strategy classes here.
-from src.strategies.factory import Strat1Pine, Strat2Momentum
+from src.strategies.factory import Strat1Pine, Strat2Momentum, StratTestAlt
 
 AVAILABLE_STRATEGIES: Dict[str, Type] = {
     "Strat1Pine": Strat1Pine,
     "Strat2Momentum": Strat2Momentum,
+    "StratTestAlt": StratTestAlt,
 }
 
 
@@ -72,10 +73,6 @@ class StrategyEngine(BaseEngine):
     def on_order(self, event) -> None:
         for s in self._strategies:
             s.on_order(event)
-
-    def on_trade(self, event) -> None:
-        for s in self._strategies:
-            s.on_trade(event)
 
     def on_timer(self) -> None:
         for s in self._strategies:

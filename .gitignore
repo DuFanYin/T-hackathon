@@ -1,2 +1,6 @@
 OTrader/
 .venv/
+# Env files
+.env
+third_party/
+__pycache__/

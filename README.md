@@ -1,15 +1,28 @@
 # T-hackathon
 
+## Quick start: how the system runs
+
+- **Two modes**:
+  - `python main.py mock` — safe paper-trading against Roostoo mock (`https://mock-api.roostoo.com`).
+  - `python main.py real` — live trading against the real Roostoo API (`https://api.roostoo.com` or `ROOSTOO_REAL_BASE_URL`).
+- **Config‑driven strategies (current behavior)**:
+  - On startup, `main.py` reads `strategies_config.json` (or `STRATEGY_CONFIG_PATH` if set).
+  - For each entry `{ "strategy": "...", "symbol": "..." }` it automatically:
+    - calls `main.add_strategy(strategy, symbol)`
+    - then `main.init_strategy(...)`
+    - then `main.start_strategy(...)`
+  - There is no manual CLI to add strategies yet; edit `strategies_config.json` to control what runs.
+
 ## Crypto trading system (skeleton)
 
-Deterministic, event-driven crypto trading skeleton inspired by OTrader:
+Event-driven crypto trading skeleton for a mock exchange (Roostoo):
 
-- **REST vendor**: market data and orders use stateless HTTP (no persistent connection).
-- **Timer-driven loop**: each timer tick runs gateway → position → strategy → risk. Gateway fetches and emits `EVENT_BAR` (payload: `BarData`); event engine routes bars to the market engine, which stores `BarData` and updates the symbol cache and indicators; strategies and position read via `market_engine.get_symbol()`, `get_last_bars()`, etc.
-- **Bar data only**: all bar handling uses the `BarData` dataclass (symbol, open, high, low, close, volume, ts); no separate tuple type.
-- **Central routing**: the event engine owns the routing and call order (no dynamic registration).
-- **gRPC**: remote dashboard and control over gRPC (stub only until codegen is wired).
-- **Long-only positions**: position engine enforces quantity ≥ 0; shorting raises `ValueError`.
+- **Pure HTTP integration**: both market data and orders go through stateless REST calls.
+- **Timer-driven core loop**: on each tick, the system pulls market data, refreshes positions, lets strategies run, then applies risk.
+- **Bars, not ticks**: market data is modeled as OHLC bars; the market engine is the single source of truth for symbol state and indicators.
+- **Order-status driven positions**: positions are derived from order status (fills) and marked to market using the latest prices.
+- **Centralized routing**: a single event engine controls how data flows between engines.
+- **Long-only**: the position engine enforces non-negative quantities; shorting is intentionally out of scope.
 
 ---
 
@@ -20,58 +33,80 @@ src/
 ├── engines/
 │   ├── engine_main.py      # Composition root and façade
 │   ├── engine_event.py     # Event queue and deterministic routing
-│   ├── engine_gateway.py   # REST I/O; on_timer() fetches and put_bar(BarData); emits EVENT_BAR
-│   ├── engine_market.py    # BarData buffer + SymbolData; on_bar(); get_symbol(), get_atr(), get_pivot_low(), prev3_bearish_strict()
-│   ├── engine_strategy.py  # AVAILABLE_STRATEGIES (name→class); add_strategy_for_pair; init/start/stop_strategy
-│   ├── engine_position.py  # Per-strategy positions and PnL from trades; long-only
-│   └── engine_risk.py      # Risk checks and alerts
+│   ├── engine_gateway.py   # Roostoo REST adapter for market data, orders, and account state
+│   ├── engine_market.py    # Central symbol cache and bar/indicator storage
+│   ├── engine_strategy.py  # Strategy registry, lifecycle, and event fan-out
+│   ├── engine_position.py  # Per-strategy holdings and mark-to-market PnL
+│   └── engine_risk.py      # Risk hooks (order/timer)
 ├── grpc/
 │   ├── __init__.py
 │   ├── service.proto       # Dashboard/control RPCs
 │   └── server.py           # GrpcServer(main_engine) stub
 ├── strategies/
-│   ├── template.py         # StrategyTemplate: on_init, on_start, on_stop, on_timer, on_order, on_trade; get_symbol, send_order, clear_all_positions
-│   └── factory/            # Strategy implementations (e.g. strat1_pine.py); register in engine_strategy.AVAILABLE_STRATEGIES
+│   ├── template.py         # Common lifecycle and helper API for strategies
+│   └── factory/            # Concrete strategies, discoverable by name
 └── utilities/
     ├── base_engine.py      # BaseEngine: main_engine, engine_name, close()
-    ├── events.py           # Event type constants (EVENT_BAR, EVENT_ORDER, EVENT_TRADE, ...)
-    ├── intents.py          # Intent constants (INTENT_PLACE_ORDER, INTENT_CANCEL_ORDER, INTENT_LOG)
-    └── object.py           # BarData, SymbolData, OrderRequest, CancelOrderRequest, OrderData, TradeData, PositionData, StrategyHolding, LogData, ...
+    ├── events.py           # Event-type constants
+    ├── intents.py          # Intent-type constants
+    └── object.py           # Shared dataclasses used as event payloads
 ```
 
 ---
 
 ## Engines
 
-**MainEngine** — Builds all engines, starts the event loop. Holds `TRADING_PAIRS` (e.g. `["BTCUSDT", "ETHUSDT"]`); market and gateway are given this list. `add_strategy(strategy_name, trading_pair)` looks up the class in `StrategyEngine.AVAILABLE_STRATEGIES` and creates an instance. Exposes `get_strategy`, `init_strategy`, `start_strategy`, `stop_strategy`, `put_event`, `handle_intent`, `send_order`, `cancel_order`.
+**MainEngine** — Composition root and façade. It wires and owns all engines, starts the event loop, and exposes a simple API for:
 
-**EventEngine** — Single event queue and timer thread. Routes events and intents to the right engines in a fixed order (no plug-in registration).
+- Managing strategies (register, init, start, stop)
+- Pushing events into the system
+- Calling high-level gateway operations (send/cancel order, query orders, pull balances/tickers)
 
-**GatewayEngine** — Sole contact with the vendor (HTTP). Initialized with `trading_pairs`. In `on_timer()` fetch bars and call `put_bar(BarData(...))`. Implements `send_order` and `cancel_order`.
+**EventEngine** — In-process event bus and timer. It owns the deterministic call order between engines and keeps the system loosely coupled:
 
-**MarketEngine** — Stores `BarData` per symbol; receives `EVENT_BAR` and updates bar buffer + symbol cache. Exposes `get_symbol(symbol)`, `get_last_bars(symbol, n)`, `get_bar_count`, `get_atr`, `get_pivot_low`, `prev3_bearish_strict`.
+- Translates timer ticks into a fixed “gateway → position → strategy → risk” pipeline
+- Routes bar events from gateway to market engine
+- Routes intents (place/cancel/log) to the appropriate high-level operations
 
-**StrategyEngine** — `AVAILABLE_STRATEGIES` dict (name → class). `add_strategy_for_pair(strategy_name, trading_pair)` creates one instance; `get_strategy`, `init_strategy`, `start_strategy`, `stop_strategy` for per-strategy control. Dispatches `on_order`, `on_trade`, `on_timer` to each strategy.
+**GatewayEngine** — The only component that talks to Roostoo. It:
 
-**PositionEngine** — Per-strategy positions and PnL; long-only (quantity ≥ 0). Consumes trades via `on_trade`. On each timer tick, `process_timer_event()` refreshes metrics from market engine mark prices. Exposes `get_holding(strategy_name)`, `serialize_holding`, `load_serialized_holding`.
+- Pulls market data on each timer tick and turns it into bar events
+- Sends orders, cancels orders, and polls order status on behalf of strategies
+- Maintains a per-strategy view of active/pending orders so higher layers don’t have to know API details
 
-**RiskEngine** — Receives `on_order`, `on_trade`, `on_timer` and can emit `EVENT_RISK_ALERT`.
+**MarketEngine** — In-memory view of the market. It:
+
+- Tracks recent bars per symbol
+- Maintains a simple symbol cache (last price and timestamp)
+- Offers a surface for strategies to fetch prices and indicators without touching the vendor API
+
+**StrategyEngine** — Strategy container. It:
+
+- Discovers and instantiates strategies by name
+- Owns strategy lifecycle transitions
+- Fans out relevant events (order updates and timer ticks) to each strategy instance
+
+**PositionEngine** — Strategy-level positions and PnL. It:
+
+- Derives position changes from order status (fills)
+- Uses the latest prices from the market engine to compute mark-to-market values
+- Presents a clean per-strategy holdings view for strategies, risk, and dashboards
+
+**RiskEngine** — Hook point for custom risk logic. It:
+
+- Observes orders and timer ticks
+- Can emit risk alerts via the event system
 
 ---
 
 ## Event and intent routing
 
-**Bar** — `EVENT_BAR` (payload: `BarData`) → `MarketEngine.on_bar()` (appends bar, updates symbol cache).
+At a high level, the data flow is:
 
-**Timer** — `Gateway.on_timer()` (may call `put_bar(BarData)`) → `Position.process_timer_event()` → `Strategy.on_timer()` → `Risk.on_timer()`.
-
-**Order** — `Strategy.on_order()` → `Risk.on_order()`.
-
-**Trade** — `Position.on_trade()` → `Strategy.on_trade()` → `Risk.on_trade()`.
-
-**Log / risk alert** — Printed to stdout.
-
-**Intents** — `INTENT_PLACE_ORDER` → `send_order`; `INTENT_CANCEL_ORDER` → `cancel_order`; `INTENT_LOG` → `put_event(EVENT_LOG, ...)`.
+- **Market data**: gateway pulls from the exchange, converts to bars, and pushes into the event bus; market engine is the single consumer and cache.
+- **Orders**: strategies express intent to trade; gateway turns that into API calls and periodically turns order status into internal order events.
+- **Positions & PnL**: position engine interprets order events, keeps holdings per strategy, and uses the market view for valuing those holdings.
+- **Intents & control**: high-level actions like “place order”, “cancel order”, and “log” remain intents; the event engine translates them into concrete engine calls.
 
 ---
 
@@ -87,7 +122,121 @@ python -m grpc_tools.protoc -I src/grpc --python_out=src/grpc --grpc_python_out=
 
 ## How to use
 
-1. `main = MainEngine()` — uses `TRADING_PAIRS`; timer starts; market and gateway have bar buffers for each symbol.
-2. `main.add_strategy("Strat1Pine", "BTCUSDT")` — looks up the class in `AVAILABLE_STRATEGIES` and adds it for that pair. Add new strategies under `src/strategies/factory` and register them in `engine_strategy.AVAILABLE_STRATEGIES`.
-3. Optionally `main.init_strategy("Strat1Pine_BTCUSDT")`, `main.start_strategy(...)`, `main.stop_strategy(...)` for lifecycle control.
-4. Gateway implements `on_timer()` to fetch bars for `self.trading_pairs` and call `put_bar(BarData(...))`. Strategies use `get_symbol(symbol)` and market engine indicator methods; place orders via `send_order(...)`. Template provides `clear_all_positions()` to flatten long positions.
+### 1. Prepare environment
+
+- **Install dependencies** (inside a virtualenv):
+
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+- **Create `.env` at repo root** (see `.env.sample` for keys):
+  - `General_Portfolio_Testing_API_KEY`
+  - `General_Portfolio_Testing_API_SECRET`
+  - Optionally `ROOSTOO_MOCK_BASE_URL` (defaults to `https://mock-api.roostoo.com`)
+  - Optionally `ROOSTOO_REAL_BASE_URL` for real trading.
+
+The gateway will read these on startup; without keys, signed endpoints (balance, orders) will fail.
+
+### 2. Running in mock mode (paper trading on Roostoo mock)
+
+Mock mode is the default and is **safe**: all trading happens against the Roostoo mock environment.
+
+```bash
+python main.py mock
+```
+
+What happens:
+
+1. **Process bootstrap**
+   - Ensures the repo root is on `sys.path`.
+   - Loads strategy config from `strategies_config.json` (or `STRATEGY_CONFIG_PATH` if set).  
+     **Right now `main.py` only supports this config-driven mode: it auto-creates, inits, and starts all strategies defined in that JSON file.**
+
+2. **Engine startup**
+   - `MainEngine(env_mode="mock")` is created.
+   - `GatewayEngine` points to `ROOSTOO_MOCK_BASE_URL`.
+   - `MainEngine` calls `GET /v3/exchangeInfo` and:
+     - Discovers all available pairs from `TradePairs`.
+     - Caches them in `main_engine.trading_pairs` (available universe).
+     - Does **not** poll all of them each tick; it only polls pairs used by strategies.
+   - `EventEngine` starts its worker + timer threads (1s tick).
+
+3. **Strategy wiring**
+   - For each entry in `strategies_config.json`, `main.py` does:
+     - `main.add_strategy(strategy_name, symbol)`
+     - `main.init_strategy(f"{strategy_name}_{symbol}")`
+     - `main.start_strategy(f"{strategy_name}_{symbol}")`
+   - Adding a strategy for `BTCUSDT`:
+     - Marks `BTCUSDT` as **active**.
+     - Subscribes `GatewayEngine` ticker polling for that symbol.
+     - Pre-creates bar buffers for `BTCUSDT` in `MarketEngine`.
+
+4. **Live loop**
+   - On each timer tick:
+     - `GatewayEngine` calls **one** `GET /v3/ticker?timestamp=...` with no `pair`, receiving all pairs,
+       then filters down to active symbols (e.g. `BTCUSDT`) and emits `EVENT_BAR` for each as a 1‑tick OHLC bar.
+     - `MarketEngine` updates `SymbolData` (latest price) and appends bars per symbol.
+     - `PositionEngine` recomputes mark‑to‑market values.
+     - `StrategyEngine` calls `on_timer()` on each started strategy; strategies:
+       - Read prices via `get_symbol(symbol)` / indicator helpers.
+       - Place orders via `StrategyTemplate.send_order(...)` (MARKET/LIMIT).
+     - `GatewayEngine` polls order status with `POST /v3/query_order` and emits `EVENT_ORDER` updates,
+       which flow into `PositionEngine` and strategies.
+
+5. **Shutdown**
+   - `Ctrl+C` in the terminal:
+     - `main.py` stops all started strategies (`main.stop_strategy(name)`).
+     - Calls `main.disconnect()` to stop the event engine and close the gateway.
+
+### 3. Running in real mode (live Roostoo trading)
+
+Real mode talks to the live Roostoo API. **Only use this if you understand the risk and have real credentials.**
+
+```bash
+python main.py real
+```
+
+Differences vs mock:
+
+- `MainEngine(env_mode="real")`:
+  - `GatewayEngine` switches base URL to `ROOSTOO_REAL_BASE_URL` (or `https://api.roostoo.com` by default).
+  - Still uses the same discovery flow (`/v3/exchangeInfo`) and the same timer‑driven architecture.
+- API keys:
+  - You should point `ROOSTOO_REAL_BASE_URL` and appropriate API key/secret env vars to your live account.
+- Behavior:
+  - Strategies, position tracking, and logging behave identically; only the underlying HTTP endpoints and balances are different.
+
+### 4. Programmatic usage
+
+If you want to embed `MainEngine` directly instead of using `main.py`:
+
+1. Create and start the engine:
+
+   ```python
+   from src.engines.engine_main import MainEngine
+
+   main = MainEngine(env_mode="mock")  # or "real"
+   ```
+
+2. Add and control strategies:
+
+   ```python
+   main.add_strategy("Strat1Pine", "BTCUSDT")
+   name = "Strat1Pine_BTCUSDT"
+   main.init_strategy(name)
+   main.start_strategy(name)
+   # ...
+   main.stop_strategy(name)
+   main.disconnect()
+   ```
+
+3. Interact with gateway/positions:
+
+   ```python
+   main.get_all_trading_pairs()
+   main.get_ticker("BTCUSDT")
+   main.get_balance()
+   main.place_order("BTCUSDT", "BUY", 0.001, order_type="MARKET")
+   holding = main.position_engine.get_holding("Strat1Pine_BTCUSDT")
+   ```
