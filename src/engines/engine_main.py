@@ -12,6 +12,7 @@ from .engine_market import MarketEngine
 from .engine_position import PositionEngine
 from .engine_risk import RiskEngine
 from .engine_strategy import StrategyEngine
+from src.control.log_store import LogStore
 
 
 class MainEngine:
@@ -27,6 +28,7 @@ class MainEngine:
         self.trading_pairs: list[str] = []  # available pairs discovered from exchangeInfo
         self.active_pairs: list[str] = []  # pairs actively traded/polled (added when strategies are added)
         self.env_mode: str = env_mode.strip().lower() if env_mode else "mock"
+        self.log_store: LogStore = LogStore()
 
         self.event_engine: EventEngine = event_engine or EventEngine(main_engine=self)
         if event_engine is not None:
@@ -54,8 +56,9 @@ class MainEngine:
                             pairs.append(symbol)
             if pairs:
                 self.trading_pairs = pairs
-                # Important: do not poll ALL pairs by default; only poll active pairs used by strategies.
-                self.gateway_engine.trading_pairs = []
+                # Poll all pairs with one bulk /v3/ticker call per tick.
+                self.gateway_engine.trading_pairs = list(pairs)
+                self.market_engine.set_symbols(pairs)
             else:
                 print("[MainEngine] No trading pairs discovered from /v3/exchangeInfo; system will run without market data.")
         except Exception as e:
@@ -99,6 +102,23 @@ class MainEngine:
     def stop_strategy(self, strategy_name: str) -> None:
         """Stop the strategy (independent stop control)."""
         self.strategy_engine.stop_strategy(strategy_name)
+
+    def delete_strategy(self, strategy_name: str) -> None:
+        """
+        Remove a strategy instance and its holdings.
+
+        - Calls stop_strategy (if present)
+        - Removes from StrategyEngine registry
+        - Clears PositionEngine holdings for this strategy
+        """
+        if self.strategy_engine.get_strategy(strategy_name) is not None:
+            try:
+                self.stop_strategy(strategy_name)
+            except Exception:
+                # Stop errors should not prevent deletion.
+                pass
+        self.strategy_engine.remove_strategy(strategy_name)
+        self.position_engine.remove_strategy_holding(strategy_name)
 
     # ------------------------------------------------------------------
     # Connectivity façade

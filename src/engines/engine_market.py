@@ -50,6 +50,41 @@ class MarketEngine(BaseEngine):
         """Return cached SymbolData for the symbol (last_price from latest bar close)."""
         return self._symbols.get(symbol)
 
+    def update_symbol_from_ticker(
+        self,
+        symbol: str,
+        *,
+        last_price: float | None = None,
+        bid_price: float | None = None,
+        ask_price: float | None = None,
+        volume_24h: float | None = None,
+        notional_24h: float | None = None,
+        change_24h: float | None = None,
+    ) -> None:
+        """
+        Update SymbolData snapshot directly from vendor ticker data.
+
+        This complements bar updates: bars feed indicators; ticker feeds richer snapshot fields.
+        """
+        if not symbol:
+            return
+        existing = self._symbols.get(symbol)
+        if existing is None:
+            existing = SymbolData(symbol=symbol)
+            self._symbols[symbol] = existing
+        if last_price is not None:
+            existing.last_price = float(last_price)
+        if bid_price is not None:
+            existing.bid_price = float(bid_price)
+        if ask_price is not None:
+            existing.ask_price = float(ask_price)
+        if volume_24h is not None:
+            existing.volume_24h = float(volume_24h)
+        if notional_24h is not None:
+            existing.notional_24h = float(notional_24h)
+        if change_24h is not None:
+            existing.change_24h = float(change_24h)
+
     def set_symbols(self, symbols: List[str]) -> None:
         """
         Hint the market engine which symbols will be traded.

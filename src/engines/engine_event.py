@@ -139,6 +139,13 @@ class EventEngine(BaseEngine):
 
     def _handle_log(self, event: Event) -> None:
         msg = getattr(event.data, "msg", None) or str(event.data)
+        # Fan out to control-plane log store if present.
+        try:
+            me = self.main_engine
+            if me is not None and hasattr(me, "log_store") and me.log_store is not None:
+                me.log_store.append(f"[LOG] {msg}")
+        except Exception:
+            pass
         print(f"[LOG] {msg}")
 
     def _handle_risk_alert(self, event: Event) -> None:

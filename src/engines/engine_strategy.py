@@ -70,6 +70,12 @@ class StrategyEngine(BaseEngine):
             raise ValueError(f"Strategy not found: {strategy_name}")
         s.on_stop()
 
+    def remove_strategy(self, strategy_name: str) -> None:
+        """Remove a strategy instance from the registry (if present)."""
+        self._strategies = [
+            s for s in self._strategies if getattr(s, "strategy_name", None) != strategy_name
+        ]
+
     def on_order(self, event) -> None:
         for s in self._strategies:
             s.on_order(event)

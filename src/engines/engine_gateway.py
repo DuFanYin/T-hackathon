@@ -277,13 +277,13 @@ class GatewayEngine(BaseEngine):
             return None
 
     def on_timer(self) -> None:
-        """Poll ticker once and emit EVENT_BAR with BarData for each active trading pair."""
+        """Poll ticker once and update all subscribed symbols."""
         if not self.trading_pairs:
             # No known symbols: still allow order polling even if market data is disabled.
             self._poll_orders_and_emit()
             return
 
-        # One bulk ticker call; then filter down to active internal symbols.
+        # One bulk ticker call; then update subscribed internal symbols.
         all_data = self._fetch_ticker_all()
         if not isinstance(all_data, dict):
             self._poll_orders_and_emit()
@@ -297,14 +297,31 @@ class GatewayEngine(BaseEngine):
 
             # Roostoo ticker item keys: MaxBid, MinAsk, LastPrice, Change, CoinTradeValue, UnitTradeValue
             last = float(item.get("LastPrice", 0.0))
+            bid = float(item.get("MaxBid", 0.0) or 0.0)
+            ask = float(item.get("MinAsk", 0.0) or 0.0)
+            change = float(item.get("Change", 0.0) or 0.0)
             # No OHLC in ticker response; represent as 1-tick bar for now.
             high = last
             low = last
             open_ = last
-            volume = float(item.get("CoinTradeValue", 0.0))
+            volume = float(item.get("CoinTradeValue", 0.0) or 0.0)
+            notional = float(item.get("UnitTradeValue", 0.0) or 0.0)
 
             if last <= 0:
                 continue
+
+            # Update snapshot fields for the symbol.
+            me = self.main_engine
+            if me is not None and hasattr(me, "market_engine"):
+                me.market_engine.update_symbol_from_ticker(
+                    symbol,
+                    last_price=last,
+                    bid_price=bid if bid > 0 else None,
+                    ask_price=ask if ask > 0 else None,
+                    volume_24h=volume,
+                    notional_24h=notional,
+                    change_24h=change,
+                )
 
             bar = BarData(
                 symbol=symbol,

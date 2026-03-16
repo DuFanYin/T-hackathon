@@ -99,8 +99,13 @@ class Strat1Pine(StrategyTemplate):
                 self._limit_pending = False
                 self._pending_order_id = None
 
-        o, h, l, c = last_bars[-1]
-        prev_open = last_bars[-2][0]
+        last_bar = last_bars[-1]
+        prev_bar = last_bars[-2]
+        o = last_bar.open
+        h = last_bar.high
+        l = last_bar.low
+        c = last_bar.close
+        prev_open = prev_bar.open
         rng = h - l
         close_top_third = rng > 0 and c >= (l + rng * (2.0 / 3.0))
         close_above_support = self._sup_price is not None and c > self._sup_price

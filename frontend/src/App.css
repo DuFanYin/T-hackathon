@@ -1,0 +1,257 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  background: #050505;
+  color: #e5e7eb;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100vh;
+  gap: 0;
+}
+
+:root {
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+}
+
+.sidebar {
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding: var(--space-lg);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  margin-bottom: var(--space-sm);
+  font-size: 16px;
+}
+
+.meta {
+  font-size: 12px;
+  opacity: 0.75;
+  line-height: 1.4;
+  margin-bottom: var(--space-lg);
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.nav button {
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  color: inherit;
+  cursor: pointer;
+}
+
+.nav button.active {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.main {
+  padding: var(--space-lg) var(--space-lg) var(--space-xl);
+  overflow: auto;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-md);
+  margin-bottom: var(--space-sm);
+}
+
+.main > .card {
+  margin-top: var(--space-xl);
+}
+
+.header-title {
+  font-size: 16px;
+  margin: 0;
+  font-weight: 500;
+}
+
+.pill {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  opacity: 0.9;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pill.ok {
+  border-color: rgba(52, 211, 153, 0.7);
+}
+
+.pill.bad {
+  border-color: rgba(248, 113, 113, 0.7);
+}
+
+.card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: var(--space-md);
+  background: rgba(255, 255, 255, 0.02);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.card + .card {
+  margin-top: var(--space-md);
+}
+
+.row {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.field label {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.field input,
+.field select {
+  min-width: 220px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+}
+
+.btn {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+  transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn.primary {
+  border-color: rgba(52, 211, 153, 0.7);
+}
+
+.btn.danger {
+  border-color: rgba(248, 113, 113, 0.7);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: var(--space-md);
+}
+
+.table-wrapper {
+  margin-top: var(--space-sm);
+  max-height: 520px;
+  overflow: auto;
+}
+
+.table th,
+.table td {
+  padding: 8px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+}
+
+.table th {
+  text-align: left;
+  font-size: 12px;
+  opacity: 0.8;
+  font-weight: 600;
+}
+
+.table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.table tr.selected td {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.price-up {
+  color: #f97373;
+}
+
+.price-down {
+  color: #4ade80;
+}
+
+.muted {
+  opacity: 0.7;
+}
+
+.mono {
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.logs {
+  height: 520px;
+  overflow: auto;
+  white-space: pre-wrap;
+  line-height: 1.35;
+}
+
+@media (max-width: 920px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .nav button {
+    flex: 1 1 120px;
+  }
+}
+
