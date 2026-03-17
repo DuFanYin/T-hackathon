@@ -117,21 +117,17 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
     </div>
 
     <div className="mt-2 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/40">
-      <table className="w-full border-collapse text-left">
+      <table className="w-full table-fixed border-collapse text-left">
         <thead>
           <tr className="bg-white/5 text-xs text-white/80">
-            <th className="px-2 py-2">Name</th>
-            <th className="px-2 py-2">Inited</th>
-            <th className="px-2 py-2">Started</th>
-            <th className="px-2 py-2">Error</th>
-            <th className="px-2 py-2 font-mono">Error msg</th>
-            <th className="px-2 py-2">Pos</th>
-            <th className="px-2 py-2 text-right">Total cost</th>
-            <th className="px-2 py-2 text-right">Value</th>
-            <th className="px-2 py-2 text-right">U PnL</th>
-            <th className="px-2 py-2 text-right">R PnL</th>
-            <th className="px-2 py-2 text-right">PnL</th>
-            <th className="px-2 py-2 font-mono">Selected</th>
+            <th className="w-[25%] px-2 py-2 text-left">Name</th>
+            <th className="w-[10%] px-2 py-2 text-right">Status</th>
+            <th className="w-[20%] px-2 py-2 text-right">Pos</th>
+            <th className="w-[11%] px-2 py-2 text-right">Total cost</th>
+            <th className="w-[11%] px-2 py-2 text-right">Value</th>
+            <th className="w-[11%] px-2 py-2 text-right">U PnL</th>
+            <th className="w-[11%] px-2 py-2 text-right">R PnL</th>
+            <th className="w-[11%] px-2 py-2 text-right">PnL</th>
           </tr>
         </thead>
         <tbody>
@@ -144,14 +140,38 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
               ].join(' ')}
               onClick={() => onSelect(s.name)}
             >
-              <td className="px-2 py-1.5 font-mono text-xs text-slate-100">{s.name}</td>
-              <td className="px-2 py-1.5">{String(s.inited)}</td>
-              <td className="px-2 py-1.5">{String(s.started)}</td>
-              <td className="px-2 py-1.5">{String(s.error)}</td>
-              <td className="px-2 py-1.5 font-mono text-[11px] text-white/60">
-                {s.error_msg}
+              <td className="px-2 py-1.5 text-left font-mono text-xs text-slate-100">
+                {s.name}
               </td>
-              <td className="px-2 py-1.5 font-mono text-[11px] text-slate-100">
+              <td className="px-2 py-1.5 text-right text-xs">
+                {s.error ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/80 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                    Error
+                  </span>
+                ) : s.started ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/80 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    Running
+                  </span>
+                ) : s.inited ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-sky-400/80 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+                    Inited
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-white/20 bg-white/5 px-2 py-0.5 text-[11px] text-slate-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+                    Created
+                  </span>
+                )}
+                {s.error && s.error_msg && (
+                  <div className="mt-0.5 font-mono text-[10px] text-white/60">
+                    {s.error_msg}
+                  </div>
+                )}
+              </td>
+              <td className="px-2 py-1.5 text-right font-mono text-[11px] text-slate-100">
                 {(() => {
                   const h = holdings[s.name];
                   if (!h) return '-';
@@ -175,15 +195,12 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
               <td className="px-2 py-1.5 text-right font-mono text-[11px] tabular-nums">
                 {holdings[s.name] ? (holdings[s.name].pnl ?? 0).toFixed(2) : '-'}
               </td>
-              <td className="px-2 py-1.5 font-mono text-[11px]">
-                {selectedName === s.name ? 'YES' : ''}
-              </td>
             </tr>
           ))}
           {running.length === 0 && (
             <tr>
               <td
-                colSpan={12}
+                colSpan={8}
                 className="px-2 py-4 text-center text-xs text-white/70"
               >
                 No running strategies (use the form above to start one).

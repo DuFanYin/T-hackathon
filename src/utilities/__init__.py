@@ -8,6 +8,7 @@ This module exposes:
 """
 
 from .base_engine import BaseEngine
+from .interval import Interval
 from .events import (
     EVENT_BAR,
     EVENT_LOG,
@@ -23,6 +24,7 @@ from .intents import (
 
 __all__ = [
     "BaseEngine",
+    "Interval",
     "EVENT_BAR",
     "EVENT_LOG",
     "EVENT_ORDER",

@@ -2,7 +2,7 @@
 Strat2: Multi-Asset Momentum Rotation (v2)
 
 Plugs into the team's event-driven framework via StrategyTemplate.
-Signal source: Binance public API (5m candles for momentum ranking).
+Signal source: MarketEngine (bars from GatewayEngine Binance 5m injection).
 Execution: via framework's send_order() -> GatewayEngine -> Roostoo API.
 
 Production parameters (from backtest validation):
@@ -14,12 +14,8 @@ Capital allocation: 85% of portfolio ($850k of $1M).
 
 from __future__ import annotations
 
-import time
 import logging
 from typing import TYPE_CHECKING, Any
-from collections import deque
-
-import requests
 
 from src.strategies.template import StrategyTemplate
 
@@ -28,31 +24,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("strat2")
 
-# Binance public API (no key needed)
-BINANCE_URL = "https://api.binance.com"
-
-# Coins to track — maps Roostoo symbol to Binance symbol
-# Only includes coins available on BOTH Roostoo and Binance
-TRACKED_COINS = {
+# Coins to track — base symbols (MarketEngine uses BTCUSDT, ETHUSDT, etc.)
+TRACKED_COINS = [
     # Large cap
-    "BTC": "BTCUSDT", "ETH": "ETHUSDT", "BNB": "BNBUSDT",
-    "SOL": "SOLUSDT", "XRP": "XRPUSDT", "ADA": "ADAUSDT",
-    "DOGE": "DOGEUSDT", "DOT": "DOTUSDT", "LINK": "LINKUSDT",
-    "AVAX": "AVAXUSDT", "LTC": "LTCUSDT", "TON": "TONUSDT",
-    "XLM": "XLMUSDT", "HBAR": "HBARUSDT", "SUI": "SUIUSDT",
+    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK",
+    "AVAX", "LTC", "TON", "XLM", "HBAR", "SUI",
     # Mid cap
-    "UNI": "UNIUSDT", "AAVE": "AAVEUSDT", "FIL": "FILUSDT",
-    "ICP": "ICPUSDT", "NEAR": "NEARUSDT", "APT": "APTUSDT",
-    "FET": "FETUSDT", "SEI": "SEIUSDT", "TAO": "TAOUSDT",
-    "PENDLE": "PENDLEUSDT", "ENA": "ENAUSDT", "ONDO": "ONDOUSDT",
-    "ARB": "ARBUSDT", "CRV": "CRVUSDT", "WLD": "WLDUSDT",
-    "EIGEN": "EIGENUSDT", "CAKE": "CAKEUSDT", "TRX": "TRXUSDT",
-    "CFX": "CFXUSDT",
+    "UNI", "AAVE", "FIL", "ICP", "NEAR", "APT", "FET", "SEI", "TAO",
+    "PENDLE", "ENA", "ONDO", "ARB", "CRV", "WLD", "EIGEN", "CAKE", "TRX", "CFX",
     # Meme
-    "PEPE": "PEPEUSDT", "SHIB": "SHIBUSDT", "BONK": "BONKUSDT",
-    "FLOKI": "FLOKIUSDT", "WIF": "WIFUSDT", "TRUMP": "TRUMPUSDT",
-    "PENGU": "PENGUUSDT",
-}
+    "PEPE", "SHIB", "BONK", "FLOKI", "WIF", "TRUMP", "PENGU",
+]
 
 
 class Strat2Momentum(StrategyTemplate):
@@ -74,13 +56,16 @@ class Strat2Momentum(StrategyTemplate):
     ) -> None:
         s = dict(setting or {})
         s.setdefault("timer_trigger", 1)  # Run every tick; rebalance_every uses internal counting
+        s.setdefault("interval", "5m")  # This strategy uses 5m bars
         super().__init__(main_engine, strategy_name, s)
 
-        # ── Symbol format (configurable for gateway compatibility) ──
-        # Default "USD" produces pair "BTC/USD", order symbol "BTCUSD"
-        self.quote_asset: str = str(s.get("quote_asset", "USD")).upper()
-        self.order_symbol_format: str = str(s.get("order_symbol_format", "compact")).lower()
-        # "compact" = "BTCUSD", "slash" = "BTC/USD"
+        # ── Order symbol format ──
+        # GatewayEngine expects internal symbols like BTCUSDT so it can convert to Roostoo pairs BTC/USD.
+        # Keep configurable, but default to gateway-compatible format.
+        self.order_symbol_format: str = str(s.get("order_symbol_format", "gateway")).lower()
+        # Supported:
+        # - "gateway": BTCUSDT (preferred)
+        # - "slash": BTC/USD (passed through by gateway)
 
         # ── Strategy parameters (validated by backtest) ──
         self.lookback_candles: int = int(s.get("lookback_candles", 96))
@@ -98,29 +83,16 @@ class Strat2Momentum(StrategyTemplate):
         self._positions: dict[str, dict] = {}
         # {coin: {"qty", "entry_price", "peak_price", "entry_tick", "roostoo_pair"}}
 
-        # Price history buffers for each coin (stores close prices)
-        self._price_buffers: dict[str, deque] = {
-            coin: deque(maxlen=max(self.lookback_candles, self.regime_ma_candles) + 50)
-            for coin in TRACKED_COINS
-        }
-
-        # BTC close prices for regime filter
-        self._btc_closes: deque = deque(
-            maxlen=self.regime_ma_candles + 50
-        )
-
-        self._last_fetch_time: float = 0
-        self._initialized_data: bool = False
-
     def _format_pair(self, coin: str) -> str:
-        """Format trading pair (e.g. 'BTC/USD'). Configurable via quote_asset."""
-        return f"{coin}/{self.quote_asset}"
+        """Format Roostoo pair for logging (e.g. 'BTC/USD')."""
+        return f"{coin}/USD"
 
     def _format_order_symbol(self, coin: str) -> str:
-        """Format symbol for order API. 'compact'=BTCUSD, 'slash'=BTC/USD."""
+        """Format symbol for GatewayEngine.place_order()."""
         if self.order_symbol_format == "slash":
             return self._format_pair(coin)
-        return f"{coin}{self.quote_asset}"
+        # gateway-compatible internal symbol (so GatewayEngine converts USDT -> USD pair)
+        return f"{coin}USDT"
 
     def _log_reconciliation(self) -> None:
         """Log Strat2 internal positions vs PositionEngine for reconciliation (self-contained)."""
@@ -148,7 +120,7 @@ class Strat2Momentum(StrategyTemplate):
             f"top_n={self.top_n} rebal={self.rebalance_every} "
             f"trail={self.trailing_stop_pct}% min_hold={self.min_hold_candles} "
             f"regime_ma={self.regime_ma_candles} alloc=${self.capital_allocation:,.0f} "
-            f"symbol_format={self.quote_asset} order_symbol={self.order_symbol_format}"
+            f"order_symbol={self.order_symbol_format}"
         )
 
     def on_stop_logic(self) -> None:
@@ -162,84 +134,45 @@ class Strat2Momentum(StrategyTemplate):
     def on_timer_logic(self) -> None:
         self._tick_count += 1
 
-        # Fetch latest prices from Binance (throttled to avoid rate limits)
-        self._fetch_prices()
-
         if not self._has_enough_data():
             if self._tick_count % 10 == 0:
-                self.write_log(f"Warming up... {len(self._btc_closes)} BTC candles "
-                              f"(need {self.regime_ma_candles})")
+                btc_bars = 0
+                me = getattr(self._main, "market_engine", None)
+                if me:
+                    btc_bars = me.get_bar_count("BTCUSDT", self.interval.binance)
+                self.write_log(
+                    f"Warming up... {btc_bars} BTC bars (need {self.regime_ma_candles})"
+                )
             return
 
-        # Get current prices
         current_prices = self._get_current_prices()
         if not current_prices:
             return
 
-        # ── Always check trailing stops ──
         self._check_trailing_stops(current_prices)
 
-        # ── Rebalance on schedule ──
         if self._tick_count % self.rebalance_every == 0:
             self._rebalance(current_prices)
             self._log_reconciliation()
 
-    # ──────────────────────────────────────────
-    # Binance data fetching
-    # ──────────────────────────────────────────
-
-    def _fetch_prices(self) -> None:
-        """Fetch latest 5m close from Binance for all tracked coins."""
-        now = time.time()
-        # Throttle: fetch at most every 30 seconds
-        if now - self._last_fetch_time < 30:
-            return
-        self._last_fetch_time = now
-
-        for coin, binance_sym in TRACKED_COINS.items():
-            try:
-                # If we haven't initialized, fetch full history
-                if not self._initialized_data:
-                    limit = max(self.lookback_candles, self.regime_ma_candles) + 10
-                else:
-                    limit = 2  # just latest candle
-
-                url = f"{BINANCE_URL}/api/v3/klines"
-                r = requests.get(url, params={
-                    "symbol": binance_sym, "interval": "5m", "limit": limit
-                }, timeout=5)
-
-                if r.status_code != 200:
-                    continue
-
-                klines = r.json()
-                for k in klines:
-                    close = float(k[4])
-                    self._price_buffers[coin].append(close)
-
-                    if coin == "BTC":
-                        self._btc_closes.append(close)
-
-                time.sleep(0.05)  # rate limit courtesy
-
-            except Exception as e:
-                log.debug(f"Fetch {coin} failed: {e}")
-
-        if not self._initialized_data and self._has_enough_data():
-            self._initialized_data = True
-            self.write_log(f"Data initialized: {len(self._btc_closes)} BTC candles loaded")
-
     def _has_enough_data(self) -> bool:
-        """Check if we have enough history for all calculations."""
-        return len(self._btc_closes) >= self.regime_ma_candles
+        """Check if MarketEngine has enough BTC bars for regime filter."""
+        me = getattr(self._main, "market_engine", None)
+        if not me:
+            return False
+        return me.get_bar_count("BTCUSDT", self.interval.binance) >= self.regime_ma_candles
 
     def _get_current_prices(self) -> dict[str, float]:
-        """Get latest close price for each coin."""
-        prices = {}
+        """Get latest close price for each coin from MarketEngine."""
+        prices: dict[str, float] = {}
+        me = getattr(self._main, "market_engine", None)
+        if not me:
+            return prices
         for coin in TRACKED_COINS:
-            buf = self._price_buffers[coin]
-            if buf:
-                prices[coin] = buf[-1]
+            symbol = f"{coin}USDT"
+            sd = me.get_symbol(symbol)
+            if sd and getattr(sd, "last_price", 0.0) > 0:
+                prices[coin] = float(sd.last_price)
         return prices
 
     # ──────────────────────────────────────────
@@ -247,12 +180,15 @@ class Strat2Momentum(StrategyTemplate):
     # ──────────────────────────────────────────
 
     def _is_regime_bullish(self) -> bool:
-        """True if BTC is above its N-period moving average."""
-        if len(self._btc_closes) < self.regime_ma_candles:
+        """True if BTC is above its N-period moving average (from MarketEngine bars)."""
+        me = getattr(self._main, "market_engine", None)
+        if not me:
             return False
-
-        btc_price = self._btc_closes[-1]
-        btc_ma = sum(list(self._btc_closes)[-self.regime_ma_candles:]) / self.regime_ma_candles
+        bars = me.get_last_bars("BTCUSDT", self.regime_ma_candles, self.interval.binance)
+        if len(bars) < self.regime_ma_candles:
+            return False
+        btc_price = bars[-1].close
+        btc_ma = sum(b.close for b in bars[-self.regime_ma_candles:]) / self.regime_ma_candles
         return btc_price > btc_ma
 
     # ──────────────────────────────────────────
@@ -264,23 +200,22 @@ class Strat2Momentum(StrategyTemplate):
         Rank all coins by momentum (% return over lookback period).
         Returns sorted list of dicts: [{coin, momentum_pct, price}, ...]
         """
-        rankings = []
+        me = getattr(self._main, "market_engine", None)
+        if not me:
+            return []
+        rankings: list[dict] = []
         for coin in TRACKED_COINS:
-            buf = self._price_buffers[coin]
-            if len(buf) < self.lookback_candles:
+            symbol = f"{coin}USDT"
+            bars = me.get_last_bars(symbol, self.lookback_candles, self.interval.binance)
+            if len(bars) < self.lookback_candles:
                 continue
-
-            current = buf[-1]
-            past = buf[-self.lookback_candles]
-
+            past = bars[0].close
+            current = bars[-1].close
             if past <= 0 or current <= 0:
                 continue
-
             momentum_pct = (current - past) / past * 100
-
             if momentum_pct < self.min_momentum_pct:
                 continue
-
             rankings.append({
                 "coin": coin,
                 "momentum_pct": momentum_pct,
@@ -288,7 +223,6 @@ class Strat2Momentum(StrategyTemplate):
                 "roostoo_pair": self._format_pair(coin),
                 "roostoo_symbol": self._format_order_symbol(coin),
             })
-
         rankings.sort(key=lambda x: x["momentum_pct"], reverse=True)
         return rankings
 
@@ -438,9 +372,11 @@ class Strat2Momentum(StrategyTemplate):
             return
 
         current_price = 0.0
-        buf = self._price_buffers.get(coin)
-        if buf:
-            current_price = buf[-1]
+        me = getattr(self._main, "market_engine", None)
+        if me:
+            sd = me.get_symbol(f"{coin}USDT")
+            if sd and getattr(sd, "last_price", 0.0) > 0:
+                current_price = float(sd.last_price)
 
         self.write_log(
             f"SELL {coin}: qty={pos['qty']:.5f} reason={reason} "

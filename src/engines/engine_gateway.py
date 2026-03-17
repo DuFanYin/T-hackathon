@@ -24,6 +24,7 @@ import requests
 
 from src.utilities.base_engine import BaseEngine
 from src.utilities.events import EVENT_BAR, EVENT_ORDER
+from src.utilities.interval import Interval
 from src.utilities.object import BarData, OrderData
 
 from dataclasses import dataclass
@@ -72,14 +73,10 @@ class GatewayEngine(BaseEngine):
 
     # ---------------- helpers ----------------
 
-    def _generate_signature(self, params: Dict[str, Any]) -> str:
+    def _headers(self, params: Dict[str, Any]) -> Dict[str, str]:
         query_string = "&".join(f"{k}={params[k]}" for k in sorted(params.keys()))
         secret_bytes = self._secret.encode("utf-8")
-        m = hmac.new(secret_bytes, query_string.encode("utf-8"), hashlib.sha256)
-        return m.hexdigest()
-
-    def _headers(self, params: Dict[str, Any]) -> Dict[str, str]:
-        sig = self._generate_signature(params)
+        sig = hmac.new(secret_bytes, query_string.encode("utf-8"), hashlib.sha256).hexdigest()
         # Some environments expect both legacy RST-API-KEY and generic api-key headers.
         return {
             "RST-API-KEY": self._api_key,
@@ -249,91 +246,8 @@ class GatewayEngine(BaseEngine):
                 payload["limit"] = int(limit)
         return self._request_post("/v3/query_order", data=payload, signed=True)
 
-    # ---------------- market data -> bars ----------------
-
-    def _fetch_ticker_all(self) -> Dict[str, Dict[str, Any]] | None:
-        """
-        Fetch latest ticker for all pairs from Roostoo.
-
-        Docs: if `pair` is NOT sent, /v3/ticker returns Data for all listed pairs.
-        We use this once per timer tick and then filter down to the active symbols.
-        """
-        params: Dict[str, Any] = {"timestamp": self._ts_ms()}
-        try:
-            resp = requests.get(f"{self.base_url}/v3/ticker", params=params, timeout=2.0)
-            if resp.status_code != 200:
-                return None
-            body = resp.json()
-            if not isinstance(body, dict):
-                return None
-            if not body.get("Success", False):
-                return None
-            data = body.get("Data")
-            if not isinstance(data, dict):
-                return None
-            # Data is { "BTC/USD": {...}, "ETH/USD": {...}, ... }
-            return data  # type: ignore[return-value]
-        except Exception:
-            return None
-
     def on_timer(self) -> None:
-        """Poll ticker once and update all subscribed symbols."""
-        if not self.trading_pairs:
-            # No known symbols: still allow order polling even if market data is disabled.
-            self._poll_orders_and_emit()
-            return
-
-        # One bulk ticker call; then update subscribed internal symbols.
-        all_data = self._fetch_ticker_all()
-        if not isinstance(all_data, dict):
-            self._poll_orders_and_emit()
-            return
-
-        for symbol in self.trading_pairs:
-            pair = self._to_roostoo_pair(symbol)
-            item = all_data.get(pair)
-            if not isinstance(item, dict):
-                continue
-
-            # Roostoo ticker item keys: MaxBid, MinAsk, LastPrice, Change, CoinTradeValue, UnitTradeValue
-            last = float(item.get("LastPrice", 0.0))
-            bid = float(item.get("MaxBid", 0.0) or 0.0)
-            ask = float(item.get("MinAsk", 0.0) or 0.0)
-            change = float(item.get("Change", 0.0) or 0.0)
-            # No OHLC in ticker response; represent as 1-tick bar for now.
-            high = last
-            low = last
-            open_ = last
-            volume = float(item.get("CoinTradeValue", 0.0) or 0.0)
-            notional = float(item.get("UnitTradeValue", 0.0) or 0.0)
-
-            if last <= 0:
-                continue
-
-            # Update snapshot fields for the symbol.
-            me = self.main_engine
-            if me is not None and hasattr(me, "market_engine"):
-                me.market_engine.update_symbol_from_ticker(
-                    symbol,
-                    last_price=last,
-                    bid_price=bid if bid > 0 else None,
-                    ask_price=ask if ask > 0 else None,
-                    volume_24h=volume,
-                    notional_24h=notional,
-                    change_24h=change,
-                )
-
-            bar = BarData(
-                symbol=symbol,
-                open=open_,
-                high=high,
-                low=low,
-                close=last,
-                volume=volume,
-                ts=None,
-            )
-            self.put_bar(bar)
-
+        """Poll orders only; market data is owned by MarketEngine.on_timer()."""
         self._poll_orders_and_emit()
 
     # ---------------- order polling -> events ----------------
@@ -367,19 +281,6 @@ class GatewayEngine(BaseEngine):
             return {strat: ids} if ids else {}
         return {s: sorted(ids) for s, ids in self._strategy_pending.items() if ids}
 
-    @staticmethod
-    def _parse_order_detail(body: dict) -> dict | None:
-        if not isinstance(body, dict) or body.get("Success") is False:
-            return None
-        if isinstance(body.get("OrderDetail"), dict):
-            return body["OrderDetail"]
-        matched = body.get("OrderMatched")
-        if isinstance(matched, list) and matched:
-            first = matched[0]
-            if isinstance(first, dict):
-                return first
-        return None
-
     def _poll_orders_and_emit(self) -> None:
         """
         Poll /v3/query_order for tracked orders and synchronously update engines.
@@ -400,7 +301,15 @@ class GatewayEngine(BaseEngine):
             body = self.query_order(order_id=oid)
             if not isinstance(body, dict):
                 continue
-            detail = self._parse_order_detail(body)
+            if body.get("Success") is False:
+                continue
+            detail = body.get("OrderDetail")
+            if not isinstance(detail, dict):
+                matched = body.get("OrderMatched")
+                if isinstance(matched, list) and matched and isinstance(matched[0], dict):
+                    detail = matched[0]
+            if not isinstance(detail, dict):
+                continue
             if not detail:
                 continue
 

@@ -155,6 +155,11 @@ class EventEngine(BaseEngine):
     def _handle_timer(self, event: Event) -> None:
         me = self.main_engine
         assert me is not None
+        # MarketEngine owns market data refresh (Binance klines) per tick.
+        if hasattr(me, "market_engine") and me.market_engine is not None:
+            me.market_engine.on_timer()
+
+        # Gateway only handles order polling on timer.
         me.gateway_engine.on_timer()
         me.position_engine.process_timer_event()
         me.strategy_engine.on_timer()

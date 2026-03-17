@@ -11,7 +11,7 @@ interface SidebarProps {
   engineMode: string | null;
   systemRunning: boolean;
   isAuthed: boolean;
-  onLogin: (token: string) => Promise<void>;
+  onLogin: (token: string) => Promise<boolean>;
   onLogout: () => void;
   onStartMock: () => void;
   onStartLive: () => void;
@@ -152,7 +152,17 @@ export const Sidebar: FC<SidebarProps> = ({
             <button
               className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-rose-400/80 bg-rose-500/10 px-2 py-1.5 text-[11px] font-medium text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!isAuthed || !systemRunning}
-              onClick={onStopSystem}
+              onClick={async () => {
+                const token =
+                  window.prompt(
+                    'This is a dangerous action.\n\nEnter admin code to proceed:',
+                  ) || '';
+                const trimmed = token.trim();
+                if (!trimmed) return;
+                const ok = await onLogin(trimmed);
+                if (!ok) return;
+                onStopSystem();
+              }}
             >
               Stop
             </button>

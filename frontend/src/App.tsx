@@ -180,10 +180,12 @@ export default function App() {
           const ok = await api.checkAdmin(token)
           if (ok) {
             setAdminTokenState(token)
+            return true
           } else {
             // keep locked
             // simple feedback for now
             window.alert('Invalid admin token')
+            return false
           }
         }}
         onLogout={() => setAdminTokenState(null)}

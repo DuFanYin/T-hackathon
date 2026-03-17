@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.utilities.events import EVENT_LOG
 from src.utilities.intents import INTENT_PLACE_ORDER
+from src.utilities.interval import Interval
 from src.utilities.object import OrderRequest
 
 if TYPE_CHECKING:
@@ -29,6 +30,8 @@ class StrategyTemplate:
         self.strategy_name = strategy_name
         setting = setting or {}
         self._timer_trigger: int = int(setting.get("timer_trigger", 1))
+        # Each strategy uses one interval for bar data (e.g. 5m, 15m).
+        self.interval: Interval = Interval.from_str(setting.get("interval"))
         self._timer_cnt: int = 0
         self._inited: bool = False
         self._started: bool = False
@@ -39,6 +42,8 @@ class StrategyTemplate:
     # ---------- lifecycle (framework) ----------
 
     def on_init(self) -> None:
+        if self._inited:
+            return
         self._inited = True
         self.on_init_logic()
 

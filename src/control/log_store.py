@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from datetime import datetime
 from typing import AsyncIterator, Deque, Set
 
 
@@ -18,7 +19,9 @@ class LogStore:
         self._subscribers: Set[asyncio.Queue[str]] = set()
 
     def append(self, line: str) -> None:
-        msg = str(line)
+        # Backend is the single source of timestamp formatting.
+        ts = datetime.now().strftime("%m-%d %H:%M:%S")
+        msg = f"{ts} | {str(line)}"
         self._tail.append(msg)
         # Non-blocking fanout; drop if subscriber queue is full/hung.
         for q in list(self._subscribers):

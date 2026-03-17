@@ -7,12 +7,19 @@ from __future__ import annotations
 
 from collections import deque
 from typing import Dict, List, Optional, TYPE_CHECKING
+import time
+
+import requests
 
 from src.utilities.base_engine import BaseEngine
+from src.utilities.interval import Interval
 from src.utilities.object import BarData, SymbolData
 
 if TYPE_CHECKING:
     from src.engines.engine_main import MainEngine
+
+
+BINANCE_URL = "https://api.binance.com"
 
 
 class MarketEngine(BaseEngine):
@@ -28,6 +35,42 @@ class MarketEngine(BaseEngine):
         self._symbols: Dict[str, SymbolData] = {}
         self._bars: Dict[str, deque[BarData]] = {}
         self._bar_count: Dict[str, int] = {}
+        # Throttle map for Binance klines per interval string (e.g. "5m")
+        self._last_binance_fetch: Dict[str, float] = {}
+
+    # ---------- lifecycle ----------
+
+    def on_timer(self) -> None:
+        """
+        Timer hook: refresh market data from Binance for all subscribed intervals.
+
+        - Determines which intervals are needed (from active strategies).
+        - Uses main_engine.trading_pairs as the symbol universe.
+        """
+        me = self.main_engine
+        if me is None:
+            return
+
+        symbols: List[str] = getattr(me, "trading_pairs", []) or []
+        if not symbols:
+            return
+
+        intervals: set[Interval] = set()
+        if hasattr(me, "strategy_engine") and me.strategy_engine is not None:
+            for s in getattr(me.strategy_engine, "_strategies", []):
+                ival = getattr(s, "interval", None)
+                if isinstance(ival, Interval):
+                    intervals.add(ival)
+        if not intervals:
+            intervals = {Interval.M5}
+
+        for interval in intervals:
+            self.update_from_binance(symbols, interval)
+
+    @staticmethod
+    def _bar_key(symbol: str, interval: str) -> str:
+        """Composite key for per-interval bar storage."""
+        return f"{symbol}_{interval}"
 
     def on_bar(self, event) -> None:
         """Update bar buffer and SymbolData from EVENT_BAR payload (BarData)."""
@@ -93,36 +136,41 @@ class MarketEngine(BaseEngine):
         clear existing data. Bars are still accepted lazily for any symbol.
         """
         for symbol in symbols:
-            if symbol not in self._bars:
-                self._bars[symbol] = deque(maxlen=self._max_bars_per_symbol)
-            if symbol not in self._bar_count:
-                self._bar_count[symbol] = 0
+            key = self._bar_key(symbol, "5m")
+            if key not in self._bars:
+                self._bars[key] = deque(maxlen=self._max_bars_per_symbol)
+            if key not in self._bar_count:
+                self._bar_count[key] = 0
 
     # ---------- bars and indicators ----------
 
     def add_bar(self, bar: BarData) -> None:
-        """Append one bar for the symbol (e.g. from EVENT_BAR)."""
-        symbol = bar.symbol
-        if symbol not in self._bars:
-            self._bars[symbol] = deque(maxlen=self._max_bars_per_symbol)
-            self._bar_count[symbol] = 0
-        self._bars[symbol].append(bar)
-        self._bar_count[symbol] += 1
+        """Append one bar for the symbol+interval (e.g. from EVENT_BAR)."""
+        interval = bar.interval or "5m"
+        key = self._bar_key(bar.symbol, interval)
+        if key not in self._bars:
+            self._bars[key] = deque(maxlen=self._max_bars_per_symbol)
+            self._bar_count[key] = 0
+        self._bars[key].append(bar)
+        self._bar_count[key] += 1
 
-    def get_bar_count(self, symbol: str) -> int:
-        """Total bars pushed for this symbol (for limit timeout etc.)."""
-        return self._bar_count.get(symbol, 0)
+    def get_bar_count(self, symbol: str, interval: str = "5m") -> int:
+        """Total bars pushed for this symbol+interval."""
+        return self._bar_count.get(self._bar_key(symbol, interval), 0)
 
-    def get_last_bars(self, symbol: str, n: int) -> List[BarData]:
+    def get_last_bars(
+        self, symbol: str, n: int, interval: str = "5m"
+    ) -> List[BarData]:
         """Last n bars, oldest first; e.g. [-1] is latest. Returns [] if not enough bars."""
-        bars = self._bars.get(symbol)
+        key = self._bar_key(symbol, interval)
+        bars = self._bars.get(key)
         if not bars or len(bars) < n:
             return []
         return list(bars)[-n:]
 
-    def get_atr(self, symbol: str, atr_len: int = 14) -> float:
+    def get_atr(self, symbol: str, atr_len: int = 14, interval: str = "5m") -> float:
         """ATR for the symbol (requires at least atr_len+1 bars)."""
-        bars = self._bars.get(symbol)
+        bars = self._bars.get(self._bar_key(symbol, interval))
         if not bars or len(bars) < atr_len + 1:
             return 0.0
         tr_sum = 0.0
@@ -137,9 +185,11 @@ class MarketEngine(BaseEngine):
             tr_sum += tr
         return tr_sum / atr_len if atr_len > 0 else 0.0
 
-    def get_pivot_low(self, symbol: str, pivot_len: int, center_offset: int) -> float | None:
+    def get_pivot_low(
+        self, symbol: str, pivot_len: int, center_offset: int, interval: str = "5m"
+    ) -> float | None:
         """Pivot low at bar center_offset bars back (center_offset = pivot_len for confirmed pivot). Returns None if invalid."""
-        bars = self._bars.get(symbol)
+        bars = self._bars.get(self._bar_key(symbol, interval))
         n = pivot_len
         if not bars or len(bars) < 2 * n + 1 or center_offset < n or center_offset >= len(bars) - n:
             return None
@@ -151,30 +201,85 @@ class MarketEngine(BaseEngine):
                 return None
         return low_mid
 
-    @staticmethod
-    def _b_close_lower_half(o: float, h: float, l: float, c: float) -> bool:
-        return c <= (h + l) / 2.0
-
-    @staticmethod
-    def _b_bear(o: float, c: float) -> bool:
-        return c < o
-
-    def prev3_bearish_strict(self, symbol: str) -> bool:
+    def prev3_bearish_strict(self, symbol: str, interval: str = "5m") -> bool:
         """True if last 4 bars exist and bars at indices 1,2,3 (1=most recent past) satisfy strict bearish rules."""
-        bars_list = self.get_last_bars(symbol, 4)
+        bars_list = self.get_last_bars(symbol, 4, interval)
         if len(bars_list) < 4:
             return False
         b1, b2, b3 = bars_list[-2], bars_list[-3], bars_list[-4]
-        if not (self._b_bear(b1.open, b1.close) and self._b_bear(b2.open, b2.close) and self._b_bear(b3.open, b3.close)):
+        if not (b1.close < b1.open and b2.close < b2.open and b3.close < b3.open):
             return False
-        if not (
-            self._b_close_lower_half(b1.open, b1.high, b1.low, b1.close)
-            and self._b_close_lower_half(b2.open, b2.high, b2.low, b2.close)
-            and self._b_close_lower_half(b3.open, b3.high, b3.low, b3.close)
-        ):
+        if not (b1.close <= (b1.high + b1.low) / 2.0 and b2.close <= (b2.high + b2.low) / 2.0 and b3.close <= (b3.high + b3.low) / 2.0):
             return False
         if not (b2.close < b3.low and b2.high <= b3.high):
             return False
         if not (b1.close < b2.low and b1.high <= b2.high):
             return False
         return True
+
+    # ---------- external market data (Binance) ----------
+
+    def update_from_binance(
+        self,
+        symbols: List[str],
+        interval: Interval,
+        *,
+        limit: int = 2,
+        throttle_sec: float = 30.0,
+    ) -> None:
+        """
+        Fetch latest klines from Binance for given symbols and interval, update bars and symbol snapshots.
+
+        - symbols: internal symbols like "BTCUSDT"
+        - interval: Interval enum (maps to Binance klines interval string via .binance)
+        """
+        if not symbols:
+            return
+
+        ival_str = interval.binance
+        now = time.time()
+        last = self._last_binance_fetch.get(ival_str, 0.0)
+        if now - last < throttle_sec:
+            return
+        self._last_binance_fetch[ival_str] = now
+
+        for symbol in symbols:
+            params = {
+                "symbol": symbol,
+                "interval": ival_str,
+                "limit": limit,
+            }
+            try:
+                resp = requests.get(f"{BINANCE_URL}/api/v3/klines", params=params, timeout=5.0)
+                if resp.status_code != 200:
+                    continue
+                klines = resp.json()
+                if not isinstance(klines, list) or not klines:
+                    continue
+                k = klines[-1]
+                try:
+                    open_ = float(k[1])
+                    high = float(k[2])
+                    low = float(k[3])
+                    close = float(k[4])
+                    volume = float(k[5])
+                except Exception:
+                    continue
+
+                if close <= 0:
+                    continue
+
+                bar = BarData(
+                    symbol=symbol,
+                    open=open_,
+                    high=high,
+                    low=low,
+                    close=close,
+                    volume=volume,
+                    ts=None,
+                    interval=ival_str,
+                )
+                # Reuse on_bar so SymbolData & buffers stay consistent.
+                self.on_bar(bar)
+            except Exception:
+                continue

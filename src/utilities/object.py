@@ -58,6 +58,8 @@ class BarData:
     close: float
     volume: Optional[float] = None
     ts: Optional[datetime] = None
+    # Candle interval (e.g. "5m"). Used for per-interval bar storage in MarketEngine.
+    interval: Optional[str] = None
 
 
 # ---------------- ORDER ----------------
