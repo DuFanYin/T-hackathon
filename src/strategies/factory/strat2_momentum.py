@@ -126,6 +126,18 @@ class Strat2Momentum(StrategyTemplate):
             f"order_symbol={self.order_symbol_format}"
         )
 
+    def history_requirements(self) -> list[dict[str, object]]:
+        # Backfill enough candles so init/start don't wait for slow warmup.
+        ival = self.interval.binance
+        reqs: list[dict[str, object]] = []
+        # Regime filter uses BTC MA (default 288 == 24h on 5m candles).
+        reqs.append({"symbol": "BTCUSDT", "interval": ival, "bars": int(self.regime_ma_candles)})
+        # Momentum calculations need lookback window for each tracked coin.
+        lookback = int(self.lookback_candles)
+        for c in TRACKED_COINS:
+            reqs.append({"symbol": f"{c}USDT", "interval": ival, "bars": lookback})
+        return reqs
+
     def on_stop_logic(self) -> None:
         self.write_log("Strat2Momentum stopping — closing all positions")
         self._close_all_positions("strategy_stop")

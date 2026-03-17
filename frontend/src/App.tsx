@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { api, setAdminToken } from './lib/api';
 import type {
@@ -16,8 +16,6 @@ import { LogsPanel } from './components/LogsPanel';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('Strategies')
-  const [health, setHealth] = useState<{ ok: boolean; env_mode?: string } | null>(null)
-  const [healthErr, setHealthErr] = useState<string>('')
 
   const [available, setAvailable] = useState<string[]>([])
   const [running, setRunning] = useState<RunningStrategy[]>([])
@@ -26,6 +24,7 @@ export default function App() {
 
   const [startStrategy, setStartStrategy] = useState<string>('Strat1Pine')
   const [actionErr, setActionErr] = useState<string>('')
+  const [startingNames, setStartingNames] = useState<Set<string>>(() => new Set())
 
   const [positions, setPositions] = useState<Record<string, Holding>>({})
   const [accountBalance, setAccountBalance] = useState<unknown>(null)
@@ -55,12 +54,6 @@ export default function App() {
 
   const apiBase = api.baseUrl;
 
-  const pills = useMemo(() => {
-    const ok = health?.ok === true;
-    const label = ok ? `OK (${health?.env_mode ?? 'unknown'})` : healthErr ? 'DOWN' : '…';
-    return { ok, label };
-  }, [health, healthErr]);
-
   const isAuthed = !!adminToken
 
   useEffect(() => {
@@ -83,8 +76,7 @@ export default function App() {
       setSystem(st)
       setBackendOk(true)
       if (!st.running) {
-        setHealth(null)
-        setHealthErr('system not running')
+        // Backend is reachable but engine is stopped; clear engine-derived state.
         setAvailable([])
         setRunning([])
         setPositions({})
@@ -95,14 +87,11 @@ export default function App() {
         return
       }
 
-      const [h, a, r, p] = await Promise.all([
-        api.health(),
+      const [a, r, p] = await Promise.all([
         api.availableStrategies(),
         api.runningStrategies(),
         api.positions(),
       ])
-      setHealth(h)
-      setHealthErr('')
       setAvailable(a.available)
       setRunning(r.running)
       setPositions(p.holdings || {})
@@ -123,8 +112,6 @@ export default function App() {
         }
       }
     } catch (e: any) {
-      setHealth(null)
-      setHealthErr(e?.message || String(e))
       setBackendOk(false)
     }
   }
@@ -220,7 +207,6 @@ export default function App() {
         tab={tab}
         setTab={setTab}
         apiBase={apiBase}
-        pills={pills}
         backendOk={backendOk}
         engineMode={system.mode}
         systemRunning={system.running}
@@ -244,8 +230,40 @@ export default function App() {
         onStartLive={() => {
           api.systemStart('real').then(() => refreshAll()).catch(() => {})
         }}
-        onStopSystem={() => {
-          api.systemStop().then(() => refreshAll()).catch(() => {})
+        onStopSystem={async () => {
+          const anyOpen = Object.values(positions || {}).some((h: any) => {
+            const ps = Object.values((h as any)?.positions || {})
+            return ps.some((p: any) => (p?.quantity || 0) !== 0)
+          })
+          const anyStarted = running.some((s) => s.started)
+
+          if (anyOpen) {
+            window.alert('You must close positions before stopping strategies (use “Close pos” / “Close all”).')
+            return
+          }
+          if (anyStarted) {
+            window.alert('You must stop all strategies before stopping the engine.')
+            return
+          }
+
+          const token =
+            window.prompt(
+              'This is a dangerous action.\n\nEnter admin code to proceed:',
+            ) || ''
+          const trimmed = token.trim()
+          if (!trimmed) return
+          const ok = await api.checkAdmin(trimmed)
+          if (!ok) {
+            window.alert('Invalid admin token')
+            return
+          }
+          setAdminTokenState(trimmed)
+          try {
+            await api.systemStop()
+            await refreshAll()
+          } catch (e: any) {
+            window.alert(e?.message || String(e))
+          }
         }}
       />
 
@@ -265,6 +283,7 @@ export default function App() {
               startStrategy={startStrategy}
               setStartStrategy={setStartStrategy}
               busy={busy}
+              startingNames={startingNames}
               actionErr={actionErr}
               onAdd={async () => {
                 setBusy('add')
@@ -279,28 +298,26 @@ export default function App() {
                   setBusy('')
                 }
               }}
-              onInit={async (name: string) => {
-                setBusy(name)
-                setActionErr('')
-                try {
-                  await api.initStrategy({ name })
-                  await refreshAll()
-                } catch (e: any) {
-                  setActionErr(e?.message || String(e))
-                } finally {
-                  setBusy('')
-                }
-              }}
               onStartSelected={async () => {
                 if (!selectedName) return
                 setBusy('start')
                 setActionErr('')
+                setStartingNames((prev) => {
+                  const next = new Set(prev)
+                  next.add(selectedName)
+                  return next
+                })
                 try {
                   await api.startStrategyByName({ name: selectedName })
                   await refreshAll()
                 } catch (e: any) {
                   setActionErr(e?.message || String(e))
                 } finally {
+                  setStartingNames((prev) => {
+                    const next = new Set(prev)
+                    next.delete(selectedName)
+                    return next
+                  })
                   setBusy('')
                 }
               }}
@@ -309,6 +326,33 @@ export default function App() {
                 setActionErr('')
                 try {
                   await api.stopStrategy({ name })
+                  await refreshAll()
+                } catch (e: any) {
+                  setActionErr(e?.message || String(e))
+                } finally {
+                  setBusy('')
+                }
+              }}
+              onClosePositions={async (name: string) => {
+                setBusy(`${name}-close`)
+                setActionErr('')
+                try {
+                  await api.closePositions({ name })
+                  await refreshAll()
+                } catch (e: any) {
+                  setActionErr(e?.message || String(e))
+                } finally {
+                  setBusy('')
+                }
+              }}
+              onCloseAllPositions={async () => {
+                setBusy('close-all')
+                setActionErr('')
+                try {
+                  const res = await api.closeAllPositions()
+                  if (res?.errors && Object.keys(res.errors).length) {
+                    setActionErr(`close_all: errors for ${Object.keys(res.errors).length} strategies`)
+                  }
                   await refreshAll()
                 } catch (e: any) {
                   setActionErr(e?.message || String(e))

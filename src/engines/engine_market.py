@@ -31,7 +31,8 @@ class MarketEngine(BaseEngine):
         engine_name: str = "Market",
     ) -> None:
         super().__init__(main_engine=main_engine, engine_name=engine_name)
-        self._max_bars_per_symbol = 64
+        # Default bar buffer size; may be increased per symbol by ensure_history().
+        self._max_bars_per_symbol = 512
         self._symbols: Dict[str, SymbolData] = {}
         self._bars: Dict[str, deque[BarData]] = {}
         self._bar_count: Dict[str, int] = {}
@@ -168,6 +169,91 @@ class MarketEngine(BaseEngine):
             return []
         return list(bars)[-n:]
 
+    # ---------- historical backfill ----------
+
+    def ensure_history(self, symbol: str, interval: str, bars: int) -> int:
+        """
+        Ensure we have at least `bars` candles buffered for symbol+interval by backfilling from Binance.
+
+        Returns the resulting buffered bar count (len of deque).
+        """
+        sym = str(symbol or "").strip().upper()
+        ival = str(interval or "").strip()
+        need = int(bars or 0)
+        if not sym or not ival or need <= 0:
+            return 0
+
+        key = self._bar_key(sym, ival)
+        existing = self._bars.get(key)
+        have = len(existing) if existing is not None else 0
+        if have >= need:
+            return have
+
+        maxlen = max(self._max_bars_per_symbol, need, have)
+        klines = self._fetch_binance_klines(sym, ival, limit=need)
+        if not klines:
+            return have
+
+        out: list[BarData] = []
+        for k in klines:
+            if not isinstance(k, list) or len(k) < 6:
+                continue
+            try:
+                open_ = float(k[1])
+                high = float(k[2])
+                low = float(k[3])
+                close = float(k[4])
+                volume = float(k[5])
+            except Exception:
+                continue
+            if close <= 0:
+                continue
+            out.append(
+                BarData(
+                    symbol=sym,
+                    open=open_,
+                    high=high,
+                    low=low,
+                    close=close,
+                    volume=volume,
+                    ts=None,
+                    interval=ival,
+                )
+            )
+
+        if not out:
+            return have
+
+        # Replace the deque with a larger buffer so strategies can compute long MAs, etc.
+        self._bars[key] = deque(out, maxlen=maxlen)
+        self._bar_count[key] = max(int(self._bar_count.get(key, 0) or 0), len(out))
+
+        # Keep SymbolData last_price coherent with latest bar close.
+        try:
+            last_close = float(out[-1].close)
+            if last_close > 0:
+                self.update_symbol_from_ticker(sym, last_price=last_close)
+        except Exception:
+            pass
+
+        return len(self._bars[key])
+
+    @staticmethod
+    def _fetch_binance_klines(symbol: str, interval: str, *, limit: int) -> list:
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": max(1, min(int(limit), 1000)),
+        }
+        try:
+            resp = requests.get(f"{BINANCE_URL}/api/v3/klines", params=params, timeout=8.0)
+            if resp.status_code != 200:
+                return []
+            body = resp.json()
+            return body if isinstance(body, list) else []
+        except Exception:
+            return []
+
     def get_atr(self, symbol: str, atr_len: int = 14, interval: str = "5m") -> float:
         """ATR for the symbol (requires at least atr_len+1 bars)."""
         bars = self._bars.get(self._bar_key(symbol, interval))
@@ -250,11 +336,8 @@ class MarketEngine(BaseEngine):
                 "limit": limit,
             }
             try:
-                resp = requests.get(f"{BINANCE_URL}/api/v3/klines", params=params, timeout=5.0)
-                if resp.status_code != 200:
-                    continue
-                klines = resp.json()
-                if not isinstance(klines, list) or not klines:
+                klines = self._fetch_binance_klines(symbol, ival_str, limit=limit)
+                if not klines:
                     continue
                 k = klines[-1]
                 try:

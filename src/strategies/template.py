@@ -59,13 +59,54 @@ class StrategyTemplate:
     def iter_symbols(self) -> list[str]:
         return list(self.symbols)
 
+    def history_requirements(self) -> list[dict[str, object]]:
+        """
+        Declare the minimum historical candle data this strategy needs to initialize.
+
+        Returned items have shape:
+          - symbol: str (e.g. "BTCUSDT")
+          - interval: str (Binance kline interval, e.g. "5m", "1h")
+          - bars: int (minimum candles required)
+
+        The framework may fetch/backfill these bars during init.
+        Default: no requirements.
+        """
+        return []
+
     # ---------- lifecycle (framework) ----------
 
     def on_init(self) -> None:
         if self._inited:
             return
+        self._prepare_history()
         self._inited = True
         self.on_init_logic()
+
+    def _prepare_history(self) -> None:
+        """
+        Framework internal: backfill required market history before init.
+
+        This is intentionally not exposed as a control-plane operation.
+        """
+        me = getattr(self._main, "market_engine", None)
+        if me is None or not hasattr(me, "ensure_history"):
+            return
+        try:
+            reqs = list(self.history_requirements() or [])
+        except Exception:
+            return
+        for r in reqs:
+            if not isinstance(r, dict):
+                continue
+            symbol = str(r.get("symbol", "") or "").strip().upper()
+            interval = str(r.get("interval", "") or "").strip()
+            bars = int(r.get("bars", 0) or 0)
+            if not symbol or not interval or bars <= 0:
+                continue
+            try:
+                me.ensure_history(symbol, interval, bars)
+            except Exception:
+                continue
 
     def on_start(self) -> None:
         self._started = True
@@ -109,7 +150,7 @@ class StrategyTemplate:
 
     # ---------- helpers ----------
 
-    def write_log(self, msg: str, level: int = 20) -> None:
+    def write_log(self, msg: str) -> None:
         prefixed = f"[{self.strategy_name}] {msg}"
         self._main.put_event(EVENT_LOG, prefixed)
 

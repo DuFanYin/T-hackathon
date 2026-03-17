@@ -69,7 +69,6 @@ def main() -> int:
     # 6. Init and start strategy
     print("6. Initializing and starting strategy...")
     try:
-        main.init_strategy(f"Strat2Momentum_{pair}")
         main.start_strategy(f"Strat2Momentum_{pair}")
     except Exception as e:
         print(f"   FAIL: {e}")

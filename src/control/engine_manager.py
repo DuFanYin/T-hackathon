@@ -53,6 +53,22 @@ class EngineManager:
         with self._lock:
             if self._engine is None:
                 return SystemStatus(running=False, mode=None)
+
+            # Enforcement: user must stop all strategies before stopping the engine.
+            strategies = list(getattr(self._engine.strategy_engine, "_strategies", []))
+            still_started = [
+                str(getattr(s, "strategy_name", "") or "").strip()
+                for s in strategies
+                if bool(getattr(s, "started", False))
+            ]
+            still_started = [n for n in still_started if n]
+            if still_started:
+                raise RuntimeError(
+                    "you must stop all strategies before stopping the engine; still running: "
+                    + ", ".join(still_started[:10])
+                    + (" ..." if len(still_started) > 10 else "")
+                )
+
             try:
                 self._engine.event_engine.stop()
             except Exception:

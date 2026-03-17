@@ -78,6 +78,14 @@ class MainEngine:
         self.event_engine.start()
         self.write_log("[System] init: event engine started")
 
+        # Warm cached account snapshots immediately (do not wait for timer throttle).
+        # This keeps `/account/*` useful right after startup.
+        try:
+            self.write_log("[System] init: warming account cache (/v3/balance, /v3/pending_count)")
+            self.gateway_engine._refresh_account_cache(force=True)
+        except Exception:
+            pass
+
     def add_strategy(self, strategy_name: str) -> None:
         """
         Add a strategy instance (no symbol input).
@@ -87,10 +95,6 @@ class MainEngine:
     def get_strategy(self, strategy_name: str):
         """Return the strategy instance with the given name (e.g. Strat1Pine_BTCUSDT), or None."""
         return self.strategy_engine.get_strategy(strategy_name)
-
-    def init_strategy(self, strategy_name: str) -> None:
-        """Call on_init() on the strategy."""
-        self.strategy_engine.init_strategy(strategy_name)
 
     def start_strategy(self, strategy_name: str) -> None:
         """Start the strategy (independent start control)."""

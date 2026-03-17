@@ -1,5 +1,3 @@
-export type Health = { ok: boolean; env_mode?: string };
-
 export type AvailableStrategiesResponse = { available: string[] };
 
 export type RunningStrategy = {
@@ -19,9 +17,6 @@ export type StartStrategyByNameResponse = { ok: boolean; name: string };
 
 export type AddStrategyPayload = { strategy: string };
 export type AddStrategyResponse = { ok: boolean; name: string };
-
-export type InitStrategyPayload = { name: string };
-export type InitStrategyResponse = { ok: boolean; name: string };
 
 export type StopStrategyPayload = { name: string };
 export type StopStrategyResponse = { ok: boolean; name: string };
@@ -49,6 +44,11 @@ export type Holding = {
 };
 
 export type PositionsResponse = { holdings: Record<string, Holding> };
+
+export type ClosePositionsPayload = { name: string };
+export type ClosePositionsResponse = { ok: boolean; name: string };
+
+export type CloseAllPositionsResponse = { ok: boolean; closed: string[]; errors: Record<string, string> };
 
 export type LogsTailResponse = { lines: string[] };
 export type LogsStreamEvent = { line: string };

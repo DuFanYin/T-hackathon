@@ -1,0 +1,100 @@
+@startuml
+' T-hackathon — whole-project architecture (current)
+' Render with any PlantUML viewer.
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment left
+skinparam wrapWidth 240
+
+skinparam ArrowColor #2B2B2B
+skinparam ArrowThickness 1
+
+skinparam rectangle {
+  BackgroundColor #FFFFFF
+  BorderColor #2B2B2B
+}
+
+skinparam database {
+  BackgroundColor #FFF7E6
+  BorderColor #2B2B2B
+}
+
+skinparam cloud {
+  BackgroundColor #EEF5FF
+  BorderColor #2B2B2B
+}
+
+skinparam frame {
+  BackgroundColor #F7F7F7
+  BorderColor #2B2B2B
+}
+
+title T-hackathon — End-to-end Architecture
+
+actor Operator as op
+
+cloud "Public Internet / Hosting" as hosting {
+  rectangle "Vercel\n(frontend hosting)" as vercel
+}
+
+frame "Browser (operator machine)" as browser {
+  rectangle "React Dashboard (SPA)" as ui
+  rectangle "API client" as ui_api
+  rectangle "EventSource (SSE)\n/logs/stream" as sse
+}
+
+frame "Backend (one Python process)" as backend {
+  rectangle "FastAPI app" as fastapi
+  rectangle "EngineManager" as mgr
+
+  frame "Trading engine (in-process)" as engine {
+    rectangle "MainEngine\n(composition root)" as main
+    rectangle "EventEngine\n(timer thread + worker thread)" as event
+
+    rectangle "GatewayEngine\n(Roostoo REST + order polling + account cache)" as gateway
+    rectangle "MarketEngine\n(Binance klines + indicators)" as market
+    rectangle "StrategyEngine\n(strategies + holdings/PnL)" as strat
+    rectangle "RiskEngine\n(currently stub)" as risk
+  }
+
+  rectangle "OrderStore" as order_store
+  rectangle "LogStore\n(in-memory tail + SSE subscribers)" as log_store
+}
+
+database "SQLite DB\n(data/orders/orders.db)\n- orders_latest\n- order_updates" as sqlite
+database "Rotating log file\n(data/logs/system.log)" as log_file
+
+cloud "External APIs" as external {
+  rectangle "Roostoo REST API\n/mock or /real\n(v3/* endpoints)" as roostoo
+  rectangle "Binance REST API\n/api/v3/klines" as binance
+}
+
+op --> vercel : open dashboard URL
+vercel --> ui : serve static assets\n(HTML/CSS/JS)
+
+ui --> ui_api : calls
+ui_api --> fastapi : HTTP JSON\n/system/*, /strategies/*,\n/positions, /pairs,\n/account/*, /orders,\n/logs/tail
+sse --> fastapi : SSE\nGET /logs/stream
+
+fastapi --> mgr : start/stop/status\n(Engine lifecycle)
+mgr --> main : create MainEngine(env_mode)\nstop EventEngine
+
+main --> event : start/stop\n(route events + timer ticks)
+event --> market : on_timer()
+event --> gateway : on_timer()
+event --> strat : process_timer_event(); on_timer()
+event --> risk : on_timer()
+
+main --> log_store : write_log()\n(tail + fanout)
+log_store --> fastapi : stream log lines\n(SSE subscribers)
+main --> log_file : append + rotate\n(LOG_FILE / LOG_MAX_BYTES)
+
+gateway --> roostoo : place/cancel/query\n+ exchangeInfo
+market --> binance : fetch klines\n(throttled)
+
+gateway --> order_store : upsert order updates
+order_store --> sqlite : read/write
+fastapi --> sqlite : GET /orders\n(read-only query)
+
+@enduml

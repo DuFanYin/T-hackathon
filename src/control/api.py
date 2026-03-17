@@ -6,10 +6,11 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from src.engines.engine_strategy import AVAILABLE_STRATEGIES
 from src.control.engine_manager import EngineManager, Mode
+from src.strategies.template import StrategyTemplate
 
 
 def _holding_to_dict(holding) -> dict[str, Any]:
@@ -95,8 +96,11 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
 
     @app.post("/system/stop")
     def system_stop(_: None = Depends(_require_admin)):
-        st = engine_manager.stop()
-        return {"running": st.running, "mode": st.mode}
+        try:
+            st = engine_manager.stop()
+            return {"running": st.running, "mode": st.mode}
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/health")
     def health():
@@ -221,7 +225,6 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=str(e))
         try:
-            main_engine.init_strategy(name)
             main_engine.start_strategy(name)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -254,18 +257,6 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
         return {"ok": True, "name": full_name}
 
-    @app.post("/strategies/init")
-    def strategy_init(payload: dict[str, Any], _: None = Depends(_require_admin)):
-        main_engine = _eng()
-        name = str(payload.get("name", "")).strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="payload must include name")
-        try:
-            main_engine.init_strategy(name)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        return {"ok": True, "name": name}
-
     @app.post("/strategies/delete")
     def strategy_delete(payload: dict[str, Any], _: None = Depends(_require_admin)):
         main_engine = _eng()
@@ -286,6 +277,50 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         for strat_name, holding in holdings.items():
             out[strat_name] = _holding_to_dict(holding)
         return {"holdings": out}
+
+    @app.post("/positions/close")
+    def close_strategy_positions(payload: dict[str, Any], _: None = Depends(_require_admin)):
+        """
+        Close (flatten) all positions for one strategy.
+
+        Long-only: issues MARKET SELL for any positive quantity tracked in holdings.
+        """
+        main_engine = _eng()
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="payload must include name")
+        s = main_engine.get_strategy(name)
+        if s is None:
+            raise HTTPException(status_code=404, detail=f"strategy not found: {name}")
+        if not isinstance(s, StrategyTemplate):
+            raise HTTPException(status_code=500, detail="strategy type unsupported")
+        try:
+            s.clear_all_positions()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        return {"ok": True, "name": name}
+
+    @app.post("/positions/close_all")
+    def close_all_positions(_: None = Depends(_require_admin)):
+        """
+        Close (flatten) all positions for all registered strategies.
+        """
+        main_engine = _eng()
+        closed: list[str] = []
+        errors: dict[str, str] = {}
+        for s in getattr(main_engine.strategy_engine, "_strategies", []):
+            name = str(getattr(s, "strategy_name", "") or "").strip()
+            if not name:
+                continue
+            if not isinstance(s, StrategyTemplate):
+                errors[name] = "strategy type unsupported"
+                continue
+            try:
+                s.clear_all_positions()
+                closed.append(name)
+            except Exception as e:
+                errors[name] = str(e)
+        return {"ok": True, "closed": closed, "errors": errors}
 
     @app.get("/logs/tail")
     def logs_tail(n: int = 200):

@@ -31,7 +31,6 @@ class TestAltBuySellCycles(unittest.TestCase):
         try:
             main.add_strategy("StratTestAlt", "BTCUSDT")
             name = "StratTestAlt_BTCUSDT"
-            main.init_strategy(name)
             main.start_strategy(name)
 
             # Strategy triggers every 3 seconds; 3 cycles * 2 orders = 6 orders.

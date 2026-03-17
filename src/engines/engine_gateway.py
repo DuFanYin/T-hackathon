@@ -257,11 +257,11 @@ class GatewayEngine(BaseEngine):
     def on_timer(self) -> None:
         """Poll orders + refresh cached account state; market data is owned by MarketEngine.on_timer()."""
         self._poll_orders_and_emit()
-        self._refresh_account_cache()
+        self._refresh_account_cache(force=False)
 
     # ---------------- cached account snapshot (for control UI) ----------------
 
-    def _refresh_account_cache(self) -> None:
+    def _refresh_account_cache(self, *, force: bool) -> None:
         """
         Refresh cached balance/pending_count on a throttle.
 
@@ -272,11 +272,11 @@ class GatewayEngine(BaseEngine):
             (t for t in (self._cached_balance_ts, self._cached_pending_count_ts) if t is not None),
             default=0.0,
         )
-        if now - last < self._account_cache_interval_sec:
+        if (not force) and (now - last < self._account_cache_interval_sec):
             return
 
         try:
-            self.log("[Gateway] query: /v3/balance (cache refresh)")
+            self.log("[Gateway] query: /v3/balance (cache refresh)" + (" [force]" if force else ""))
             bal = self.get_balance()
             if isinstance(bal, dict):
                 # Roostoo can return SpotWallet instead of Wallet.
@@ -289,7 +289,7 @@ class GatewayEngine(BaseEngine):
             pass
 
         try:
-            self.log("[Gateway] query: /v3/pending_count (cache refresh)")
+            self.log("[Gateway] query: /v3/pending_count (cache refresh)" + (" [force]" if force else ""))
             pc = self.pending_count()
             if isinstance(pc, dict):
                 self._cached_pending_count = pc

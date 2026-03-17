@@ -6,7 +6,6 @@ interface SidebarProps {
   tab: Tab;
   setTab: (t: Tab) => void;
   apiBase: string;
-  pills: { ok: boolean; label: string };
   backendOk: boolean;
   engineMode: string | null;
   systemRunning: boolean;
@@ -15,14 +14,13 @@ interface SidebarProps {
   onLogout: () => void;
   onStartMock: () => void;
   onStartLive: () => void;
-  onStopSystem: () => void;
+  onStopSystem: () => void | Promise<void>;
 }
 
 export const Sidebar: FC<SidebarProps> = ({
   tab,
   setTab,
   apiBase,
-  pills,
   backendOk,
   engineMode,
   systemRunning,
@@ -167,16 +165,8 @@ export const Sidebar: FC<SidebarProps> = ({
             <button
               className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-rose-400/80 bg-rose-500/10 px-2 py-1.5 text-[11px] font-medium text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!isAuthed || !systemRunning}
-              onClick={async () => {
-                const token =
-                  window.prompt(
-                    'This is a dangerous action.\n\nEnter admin code to proceed:',
-                  ) || '';
-                const trimmed = token.trim();
-                if (!trimmed) return;
-                const ok = await onLogin(trimmed);
-                if (!ok) return;
-                onStopSystem();
+              onClick={() => {
+                void onStopSystem();
               }}
             >
               Stop
@@ -209,7 +199,7 @@ export const Sidebar: FC<SidebarProps> = ({
           <div>
             <div className="font-mono uppercase tracking-wide text-white/40">Mode</div>
             <div className="text-white/60">
-              {pills.ok ? 'Engine reachable' : 'Engine down or starting'}
+              {!backendOk ? 'Backend down' : systemRunning ? 'Engine running' : 'Engine stopped'}
             </div>
           </div>
           <div className="select-none font-mono text-[12px] tracking-wide text-emerald-300">

@@ -5,11 +5,11 @@ import type {
   AccountOrdersResponse,
   AccountPendingCountResponse,
   AvailableStrategiesResponse,
+  CloseAllPositionsResponse,
+  ClosePositionsPayload,
+  ClosePositionsResponse,
   DeleteStrategyPayload,
   DeleteStrategyResponse,
-  Health,
-  InitStrategyPayload,
-  InitStrategyResponse,
   LogsTailResponse,
   OrdersResponse,
   PositionsResponse,
@@ -71,16 +71,10 @@ export const api = {
   systemStart: (mode: 'mock' | 'real') =>
     http<SystemStatus>('/system/start', { method: 'POST', body: JSON.stringify({ mode }) }),
   systemStop: () => http<SystemStatus>('/system/stop', { method: 'POST', body: JSON.stringify({}) }),
-  health: () => http<Health>('/health'),
   availableStrategies: () => http<AvailableStrategiesResponse>('/strategies/available'),
   runningStrategies: () => http<RunningStrategiesResponse>('/strategies/running'),
   addStrategy: (payload: AddStrategyPayload) =>
     http<AddStrategyResponse>('/strategies/add', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  initStrategy: (payload: InitStrategyPayload) =>
-    http<InitStrategyResponse>('/strategies/init', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -105,6 +99,16 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   positions: () => http<PositionsResponse>('/positions'),
+  closePositions: (payload: ClosePositionsPayload) =>
+    http<ClosePositionsResponse>('/positions/close', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  closeAllPositions: () =>
+    http<CloseAllPositionsResponse>('/positions/close_all', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   logsTail: (n = 200) => http<LogsTailResponse>(`/logs/tail?n=${n}`),
   logsStreamUrl: () => `${API_BASE}/logs/stream`,
   accountBalance: () => http<AccountBalanceResponse>('/account/balance'),

@@ -12,12 +12,14 @@ interface StrategiesPanelProps {
   startStrategy: string;
   setStartStrategy: (s: string) => void;
   busy: string;
+  startingNames: Set<string>;
   actionErr: string;
   onAdd: () => Promise<void>;
-  onInit: (name: string) => Promise<void>;
   onStartSelected: () => Promise<void>;
   onStop: (name: string) => Promise<void>;
   onDelete: (name: string) => Promise<void>;
+  onClosePositions: (name: string) => Promise<void>;
+  onCloseAllPositions: () => Promise<void>;
 }
 
 export const StrategiesPanel: FC<StrategiesPanelProps> = ({
@@ -31,13 +33,23 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
   startStrategy,
   setStartStrategy,
   busy,
+  startingNames,
   actionErr,
   onAdd,
-  onInit,
   onStartSelected,
   onStop,
   onDelete,
-}) => (
+  onClosePositions,
+  onCloseAllPositions,
+}) => {
+  const selectedHasOpenPos = (() => {
+    const h = selectedName ? holdings[selectedName] : undefined
+    if (!h) return false
+    const ps = Object.values(h.positions || {})
+    return ps.some((p) => (p.quantity || 0) !== 0)
+  })()
+
+  return (
   <div className="flex h-full w-full flex-col rounded-xl border border-white/10 bg-white/5 p-4 shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
     <div className="mb-3 flex flex-wrap items-end gap-3">
       <div className="flex flex-col gap-1">
@@ -54,7 +66,7 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
           ))}
         </select>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-1 flex-wrap items-center gap-2">
         <button
           className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!isAuthed || busy === 'add'}
@@ -64,22 +76,23 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
         </button>
         <button
           className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-400/80 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={!isAuthed || !selectedName || busy === 'start'}
+          disabled={!isAuthed || !selectedName || busy === 'start' || startingNames.has(selectedName)}
           onClick={onStartSelected}
+          title="Start (auto-inits + backfills history as needed)"
         >
           Start
         </button>
         <button
-          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={!isAuthed || !selectedName || busy === selectedName}
-          onClick={() => onInit(selectedName)}
-        >
-          Init
-        </button>
-        <button
           className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-400/80 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!isAuthed || !selectedName || busy === selectedName}
-          onClick={() => onStop(selectedName)}
+          onClick={() => {
+            if (selectedHasOpenPos) {
+              window.alert('Cannot stop strategy while positions are open. Click “Close pos” first.')
+              return
+            }
+            onStop(selectedName)
+          }}
+          title="Stop the selected strategy"
         >
           Stop
         </button>
@@ -90,6 +103,25 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
         >
           Delete
         </button>
+
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-400/80 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-100 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!isAuthed || !selectedName || busy === `${selectedName}-close`}
+            onClick={() => onClosePositions(selectedName)}
+            title="Market-close all positions for the selected strategy"
+          >
+            Close pos
+          </button>
+          <button
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-400/50 bg-amber-500/5 px-3 py-2 text-xs font-medium text-amber-100 transition hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!isAuthed || running.length === 0 || busy === 'close-all'}
+            onClick={onCloseAllPositions}
+            title="Market-close all positions for all strategies"
+          >
+            Close all
+          </button>
+        </div>
       </div>
       {actionErr && (
         <div className="ml-auto font-mono text-[11px] text-rose-300">{actionErr}</div>
@@ -124,7 +156,12 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
                 {s.name}
               </td>
               <td className="px-2 py-1.5 text-right text-xs">
-                {s.error ? (
+                {startingNames.has(s.name) ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/80 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                    Starting
+                  </span>
+                ) : s.error ? (
                   <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/80 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-100">
                     <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
                     Error
@@ -205,5 +242,6 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
       <span className="font-mono text-[11px] text-slate-100">{activeNames.size}</span>
     </div>
   </div>
-);
+  )
+};
 

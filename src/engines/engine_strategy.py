@@ -10,8 +10,8 @@ from src.utilities.base_engine import BaseEngine
 from src.utilities.object import OrderData, PositionData, StrategyHolding
 
 if TYPE_CHECKING:
-    from src.strategies.template import StrategyTemplate
     from src.engines.engine_main import MainEngine
+    from src.strategies.template import StrategyTemplate
 
 # Hard-coded available strategies: name -> class. Add new strategy classes here.
 from src.strategies.factory import Strat1Pine, Strat2Momentum, StratTestAlt
@@ -31,7 +31,7 @@ def _round_digits(value: float, digits: int) -> float:
 
 
 class StrategyEngine(BaseEngine):
-    """Hard-coded AVAILABLE_STRATEGIES; add_strategy_for_pair(name, pair) looks up class and creates instance."""
+    """Hard-coded AVAILABLE_STRATEGIES; constructs and runs strategy instances."""
 
     def __init__(self, main_engine: "MainEngine | None" = None, engine_name: str = "Strategy") -> None:
         super().__init__(main_engine=main_engine, engine_name=engine_name)
@@ -61,27 +61,10 @@ class StrategyEngine(BaseEngine):
         if strategy_class is None:
             raise ValueError(f"Unknown strategy name: {strategy_name}. Available: {list(AVAILABLE_STRATEGIES.keys())}")
         strategy = strategy_class(self.main_engine, strategy_name=strategy_name, setting={})
-        self.add_strategy(strategy)
+        self._strategies.append(strategy)
         for sym in strategy.iter_symbols():
             self._ensure_symbol_active(sym)
         return strategy
-
-    def add_strategy_for_pair(self, strategy_name: str, trading_pair: str) -> "StrategyTemplate":
-        """Backwards compatible: create instance for one trading pair (name includes suffix)."""
-        if not self.main_engine:
-            raise ValueError("main_engine is required")
-        strategy_class = AVAILABLE_STRATEGIES.get(strategy_name)
-        if strategy_class is None:
-            raise ValueError(f"Unknown strategy name: {strategy_name}. Available: {list(AVAILABLE_STRATEGIES.keys())}")
-        name = f"{strategy_name}_{trading_pair}"
-        setting = {"symbol": trading_pair}
-        strategy = strategy_class(self.main_engine, strategy_name=name, setting=setting)
-        self.add_strategy(strategy)
-        return strategy
-
-    def add_strategy(self, strategy: "StrategyTemplate") -> None:
-        """Register a strategy instance so it receives on_timer, on_order, on_trade."""
-        self._strategies.append(strategy)
 
     def get_strategy(self, strategy_name: str) -> "StrategyTemplate | None":
         """Return the strategy instance with the given name, or None."""
@@ -90,25 +73,28 @@ class StrategyEngine(BaseEngine):
                 return s
         return None
 
-    def init_strategy(self, strategy_name: str) -> None:
-        """Call on_init() on the strategy (idempotent if already inited)."""
+    def start_strategy(self, strategy_name: str) -> None:
+        """Start the strategy (auto-inits internally)."""
         s = self.get_strategy(strategy_name)
         if s is None:
             raise ValueError(f"Strategy not found: {strategy_name}")
         s.on_init()
-
-    def start_strategy(self, strategy_name: str) -> None:
-        """Start the strategy (on_start); it will receive on_timer, on_order, on_trade."""
-        s = self.get_strategy(strategy_name)
-        if s is None:
-            raise ValueError(f"Strategy not found: {strategy_name}")
         s.on_start()
 
     def stop_strategy(self, strategy_name: str) -> None:
-        """Stop the strategy (on_stop); it will no longer run on_timer_logic."""
+        """
+        Stop the strategy (on_stop); it will no longer run on_timer_logic.
+
+        Enforcement: strategy must be FLAT before stop (no open positions).
+        """
         s = self.get_strategy(strategy_name)
         if s is None:
             raise ValueError(f"Strategy not found: {strategy_name}")
+        holding = self.get_holding(strategy_name)
+        for pos in getattr(holding, "positions", {}).values():
+            qty = float(getattr(pos, "quantity", 0.0) or 0.0)
+            if qty != 0.0:
+                raise ValueError(f"Strategy has open positions; close positions before stop: {strategy_name}")
         s.on_stop()
 
     def remove_strategy(self, strategy_name: str) -> None:
