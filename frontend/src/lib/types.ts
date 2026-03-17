@@ -11,13 +11,13 @@ export type RunningStrategy = {
 };
 export type RunningStrategiesResponse = { running: RunningStrategy[] };
 
-export type StartStrategyPayload = { strategy: string; symbol: string };
+export type StartStrategyPayload = { strategy: string };
 export type StartStrategyResponse = { ok: boolean; name: string };
 
 export type StartStrategyByNamePayload = { name: string };
 export type StartStrategyByNameResponse = { ok: boolean; name: string };
 
-export type AddStrategyPayload = { strategy: string; symbol: string };
+export type AddStrategyPayload = { strategy: string };
 export type AddStrategyResponse = { ok: boolean; name: string };
 
 export type InitStrategyPayload = { name: string };
@@ -50,25 +50,28 @@ export type Holding = {
 
 export type PositionsResponse = { holdings: Record<string, Holding> };
 
-export type SymbolSnapshot = {
-  symbol: string;
-  last_price: number;
-  bid_price: number | null;
-  ask_price: number | null;
-  volume_24h: number | null;
-  notional_24h: number | null;
-  change_24h: number | null;
-  price_precision: number | null;
-  amount_precision: number | null;
-  min_order_notional: number | null;
-};
-
 export type LogsTailResponse = { lines: string[] };
 export type LogsStreamEvent = { line: string };
 
 export type SystemStatus = { running: boolean; mode: 'mock' | 'real' | null };
 
-export type PairsResponse = { pairs: string[] };
+export type AccountBalanceResponse = { balance: unknown };
+export type AccountPendingCountResponse = { pending_count: unknown };
+export type AccountOrdersResponse = { orders: unknown };
 
-export type AllSymbolsResponse = { symbols: Record<string, SymbolSnapshot> };
+export type OrderRow = {
+  order_id: string;
+  strategy_name: string;
+  symbol: string;
+  side: string;
+  status: string;
+  quantity: number;
+  price: number;
+  filled_quantity: number;
+  filled_avg_price: number;
+  updated_ts: number;
+  raw_json: string | null;
+};
+
+export type OrdersResponse = { rows: OrderRow[] };
 

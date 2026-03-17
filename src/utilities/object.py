@@ -23,7 +23,7 @@ class SymbolData:
     This is the canonical view that:
     - `MarketEngine` updates from bars (last_price from bar close)
     - `StrategyEngine` reads for trading decisions
-    - `PositionEngine` may reference for pricing/PnL
+    - `StrategyEngine` may reference for pricing/PnL
     """
 
     symbol: str

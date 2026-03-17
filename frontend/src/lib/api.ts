@@ -1,7 +1,9 @@
 import type {
   AddStrategyPayload,
   AddStrategyResponse,
-  AllSymbolsResponse,
+  AccountBalanceResponse,
+  AccountOrdersResponse,
+  AccountPendingCountResponse,
   AvailableStrategiesResponse,
   DeleteStrategyPayload,
   DeleteStrategyResponse,
@@ -9,6 +11,7 @@ import type {
   InitStrategyPayload,
   InitStrategyResponse,
   LogsTailResponse,
+  OrdersResponse,
   PositionsResponse,
   RunningStrategiesResponse,
   StartStrategyPayload,
@@ -17,9 +20,7 @@ import type {
   StartStrategyByNameResponse,
   StopStrategyPayload,
   StopStrategyResponse,
-  SymbolSnapshot,
   SystemStatus,
-  PairsResponse,
 } from './types';
 
 let ADMIN_TOKEN: string | null = null;
@@ -71,7 +72,6 @@ export const api = {
     http<SystemStatus>('/system/start', { method: 'POST', body: JSON.stringify({ mode }) }),
   systemStop: () => http<SystemStatus>('/system/stop', { method: 'POST', body: JSON.stringify({}) }),
   health: () => http<Health>('/health'),
-  pairs: () => http<PairsResponse>('/pairs'),
   availableStrategies: () => http<AvailableStrategiesResponse>('/strategies/available'),
   runningStrategies: () => http<RunningStrategiesResponse>('/strategies/running'),
   addStrategy: (payload: AddStrategyPayload) =>
@@ -105,9 +105,19 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   positions: () => http<PositionsResponse>('/positions'),
-  symbol: (symbol: string) => http<SymbolSnapshot>(`/symbols/${encodeURIComponent(symbol)}`),
-  symbols: () => http<AllSymbolsResponse>('/symbols'),
   logsTail: (n = 200) => http<LogsTailResponse>(`/logs/tail?n=${n}`),
   logsStreamUrl: () => `${API_BASE}/logs/stream`,
+  accountBalance: () => http<AccountBalanceResponse>('/account/balance'),
+  accountPendingCount: () => http<AccountPendingCountResponse>('/account/pending_count'),
+  accountOrders: (pendingOnly = true, limit = 200) =>
+    http<AccountOrdersResponse>(`/account/orders?pending_only=${pendingOnly ? 'true' : 'false'}&limit=${limit}`),
+  orders: (strategy?: string, symbol?: string, limit = 500) => {
+    const q = new URLSearchParams()
+    if (strategy) q.set('strategy', strategy)
+    if (symbol) q.set('symbol', symbol)
+    q.set('limit', String(limit))
+    const qs = q.toString()
+    return http<OrdersResponse>(`/orders${qs ? `?${qs}` : ''}`)
+  },
 };
 

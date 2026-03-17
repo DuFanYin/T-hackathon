@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Header, Depends
@@ -111,6 +112,80 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         main_engine = _eng()
         return {"pairs": main_engine.get_all_trading_pairs()}
 
+    # ------------------------------------------------------------------
+    # Account / exchange state (Roostoo v3 passthrough)
+    # ------------------------------------------------------------------
+
+    @app.get("/account/balance")
+    def account_balance(_: None = Depends(_require_admin)):
+        main_engine = _eng()
+        return {"balance": main_engine.gateway_engine.get_cached_balance()}
+
+    @app.get("/account/pending_count")
+    def account_pending_count(_: None = Depends(_require_admin)):
+        main_engine = _eng()
+        return {"pending_count": main_engine.gateway_engine.get_cached_pending_count()}
+
+    @app.get("/account/orders")
+    def account_orders(pending_only: bool = True, limit: int = 200, _: None = Depends(_require_admin)):
+        main_engine = _eng()
+        # Cached snapshot only (UI must not trigger exchange calls).
+        return {"orders": main_engine.gateway_engine.get_cached_orders_snapshot()}
+
+    # ------------------------------------------------------------------
+    # Orders DB (SQLite)
+    # ------------------------------------------------------------------
+
+    @app.get("/orders")
+    def orders_latest(
+        strategy: str | None = None,
+        symbol: str | None = None,
+        limit: int = 500,
+        _: None = Depends(_require_admin),
+    ):
+        """
+        Read orders from the local SQLite store (latest row per order_id).
+        Works even when the engine is stopped.
+        """
+        db_path = "data/orders/orders.db"
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            where: list[str] = []
+            params: list[object] = []
+            if strategy:
+                where.append("strategy_name = ?")
+                params.append(strategy)
+            if symbol:
+                where.append("symbol = ?")
+                params.append(symbol)
+            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+            lim = max(1, min(int(limit), 5000))
+            rows = conn.execute(
+                f"""
+                SELECT
+                  order_id, strategy_name, symbol, side, status,
+                  quantity, price, filled_quantity, filled_avg_price,
+                  updated_ts, raw_json
+                FROM orders_latest
+                {where_sql}
+                ORDER BY updated_ts DESC
+                LIMIT ?
+                """,
+                (*params, lim),
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                out.append({k: r[k] for k in r.keys()})
+            return {"rows": out}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     @app.get("/strategies/running")
     def strategies_running():
         main_engine = _eng()
@@ -134,16 +209,15 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         name = str(payload.get("name", "")).strip()
         if not name:
             strategy = str(payload.get("strategy", "")).strip()
-            symbol = str(payload.get("symbol", "")).strip().upper()
-            if not strategy or not symbol:
+            if not strategy:
                 raise HTTPException(
                     status_code=400,
-                    detail="payload must include either name or (strategy and symbol)",
+                    detail="payload must include either name or strategy",
                 )
-            name = f"{strategy}_{symbol}"
+            name = strategy
             if main_engine.get_strategy(name) is None:
                 try:
-                    main_engine.add_strategy(strategy, symbol)
+                    main_engine.add_strategy(strategy)
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=str(e))
         try:
@@ -169,14 +243,13 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
     def strategy_add(payload: dict[str, Any], _: None = Depends(_require_admin)):
         main_engine = _eng()
         strategy = str(payload.get("strategy", "")).strip()
-        symbol = str(payload.get("symbol", "")).strip().upper()
-        if not strategy or not symbol:
-            raise HTTPException(status_code=400, detail="payload must include strategy and symbol")
-        full_name = f"{strategy}_{symbol}"
+        if not strategy:
+            raise HTTPException(status_code=400, detail="payload must include strategy")
+        full_name = strategy
         try:
             if main_engine.get_strategy(full_name) is not None:
                 return {"ok": True, "name": full_name}
-            main_engine.add_strategy(strategy, symbol)
+            main_engine.add_strategy(strategy)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
         return {"ok": True, "name": full_name}
@@ -208,47 +281,18 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
     @app.get("/positions")
     def positions():
         main_engine = _eng()
-        holdings = getattr(main_engine.position_engine, "_holdings", {})
+        holdings = getattr(main_engine.strategy_engine, "_holdings", {})
         out: dict[str, Any] = {}
         for strat_name, holding in holdings.items():
             out[strat_name] = _holding_to_dict(holding)
         return {"holdings": out}
 
-    @app.get("/symbols")
-    def symbols_all():
-        """
-        Return snapshot data for all symbols currently known to the market engine.
-
-        This is intended for the control UI "Symbols" page: a read-only view with no controls.
-        """
-        main_engine = _eng()
-        # Access the internal cache directly; this is a read-only snapshot.
-        market_engine = main_engine.market_engine
-        out: dict[str, Any] = {}
-        symbols_cache = getattr(market_engine, "_symbols", {}) or {}
-        for sym_key, sym in symbols_cache.items():
-            if sym is None:
-                continue
-            symbol_upper = str(getattr(sym, "symbol", sym_key or "") or "").upper()
-            if not symbol_upper:
-                continue
-            out[symbol_upper] = {
-                "symbol": symbol_upper,
-                "last_price": float(getattr(sym, "last_price", 0.0) or 0.0),
-                "bid_price": getattr(sym, "bid_price", None),
-                "ask_price": getattr(sym, "ask_price", None),
-                "volume_24h": getattr(sym, "volume_24h", None),
-                "notional_24h": getattr(sym, "notional_24h", None),
-                "change_24h": getattr(sym, "change_24h", None),
-                "price_precision": getattr(sym, "price_precision", None),
-                "amount_precision": getattr(sym, "amount_precision", None),
-                "min_order_notional": getattr(sym, "min_order_notional", None),
-            }
-        return {"symbols": out}
-
     @app.get("/logs/tail")
     def logs_tail(n: int = 200):
-        main_engine = _eng()
+        # Use the manager directly so "not running" returns 200 with empty lines.
+        main_engine = engine_manager.get()
+        if main_engine is None:
+            return {"lines": []}
         return {"lines": main_engine.log_store.tail(n)}
 
     @app.get("/logs/stream")

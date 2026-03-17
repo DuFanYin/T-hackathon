@@ -4,14 +4,14 @@ import { api, setAdminToken } from './lib/api';
 import type {
   Holding,
   RunningStrategy,
-  SymbolSnapshot,
   LogsStreamEvent,
   SystemStatus,
 } from './lib/types';
 import { Sidebar, type Tab } from './components/Sidebar';
 import { HeaderBar } from './components/HeaderBar';
 import { StrategiesPanel } from './components/StrategiesPanel';
-import { SymbolPanel } from './components/SymbolPanel';
+import { AccountPanel } from './components/AccountPanel';
+import { OrdersPanel } from './components/OrdersPanel';
 import { LogsPanel } from './components/LogsPanel';
 
 export default function App() {
@@ -25,12 +25,20 @@ export default function App() {
   const [selectedName, setSelectedName] = useState<string>('')
 
   const [startStrategy, setStartStrategy] = useState<string>('Strat1Pine')
-  const [startSymbol, setStartSymbol] = useState<string>('BTCUSDT')
   const [actionErr, setActionErr] = useState<string>('')
 
   const [positions, setPositions] = useState<Record<string, Holding>>({})
-  const [allSymbols, setAllSymbols] = useState<Record<string, SymbolSnapshot>>({})
-  const [pairs, setPairs] = useState<string[]>([])
+  const [accountBalance, setAccountBalance] = useState<unknown>(null)
+  const [accountPendingCount, setAccountPendingCount] = useState<unknown>(null)
+  const [accountOrders, setAccountOrders] = useState<unknown>(null)
+  const [accountErr, setAccountErr] = useState<string>('')
+
+  const [ordersRows, setOrdersRows] = useState<any[]>([])
+  const [ordersErr, setOrdersErr] = useState<string>('')
+  const [ordersStrategy, setOrdersStrategy] = useState<string>('')
+  const [ordersSymbol, setOrdersSymbol] = useState<string>('')
+  const [ordersLimit, setOrdersLimit] = useState<number>(500)
+  const [ordersBusy, setOrdersBusy] = useState<boolean>(false)
 
   const [logs, setLogs] = useState<string[]>([])
   const [logsOn] = useState<boolean>(true)
@@ -80,22 +88,40 @@ export default function App() {
         setAvailable([])
         setRunning([])
         setPositions({})
+        setAccountBalance(null)
+        setAccountPendingCount(null)
+        setAccountOrders(null)
+        setAccountErr('')
         return
       }
 
-      const [h, a, r, p, pr] = await Promise.all([
+      const [h, a, r, p] = await Promise.all([
         api.health(),
         api.availableStrategies(),
         api.runningStrategies(),
         api.positions(),
-        api.pairs(),
       ])
       setHealth(h)
       setHealthErr('')
       setAvailable(a.available)
       setRunning(r.running)
       setPositions(p.holdings || {})
-      setPairs(pr.pairs || [])
+
+      if (isAuthed) {
+        try {
+          const [b, pc, o] = await Promise.all([
+            api.accountBalance(),
+            api.accountPendingCount(),
+            api.accountOrders(true, 200),
+          ])
+          setAccountBalance(b.balance)
+          setAccountPendingCount(pc.pending_count)
+          setAccountOrders(o.orders)
+          setAccountErr('')
+        } catch (e: any) {
+          setAccountErr(e?.message || String(e))
+        }
+      }
     } catch (e: any) {
       setHealth(null)
       setHealthErr(e?.message || String(e))
@@ -111,22 +137,45 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (tab === 'Symbols') {
-      api.symbols()
-        .then((res) => setAllSymbols(res.symbols || {}))
-        .catch(() => setAllSymbols({}))
-      const t = window.setInterval(() => {
-        api.symbols()
-          .then((res) => setAllSymbols(res.symbols || {}))
-          .catch(() => setAllSymbols({}))
-      }, 2000)
-      return () => window.clearInterval(t)
-    }
     if (tab === 'Logs') {
       api.logsTail(200).then((r) => setLogs(r.lines)).catch(() => setLogs([]))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
+
+  async function refreshOrdersOnce() {
+    if (!isAuthed) {
+      setOrdersRows([])
+      setOrdersErr('')
+      return
+    }
+    setOrdersBusy(true)
+    try {
+      const r = await api.orders(ordersStrategy.trim() || undefined, ordersSymbol.trim() || undefined, ordersLimit)
+      setOrdersRows(r.rows || [])
+      setOrdersErr('')
+    } catch (e: any) {
+      setOrdersErr(e?.message || String(e))
+      setOrdersRows([])
+    } finally {
+      setOrdersBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (tab !== 'Orders') return
+    if (!isAuthed) {
+      setOrdersRows([])
+      setOrdersErr('')
+      return
+    }
+    refreshOrdersOnce()
+    const t = window.setInterval(() => {
+      refreshOrdersOnce()
+    }, 3000)
+    return () => window.clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, isAuthed, ordersStrategy, ordersSymbol, ordersLimit])
 
   useEffect(() => {
     if (!logsOn) return
@@ -201,7 +250,7 @@ export default function App() {
       />
 
       <main className="flex h-screen w-full flex-col gap-4 overflow-hidden bg-gradient-to-br from-slate-950 via-slate-950 to-slate-900 px-3 py-4 sm:px-5">
-        <HeaderBar title={tab === 'Symbols' ? 'Symbols' : tab} />
+        <HeaderBar title={tab} />
 
         <section className="flex w-full flex-1 flex-col overflow-hidden">
           {tab === 'Strategies' && (
@@ -210,21 +259,18 @@ export default function App() {
               running={running}
               activeNames={activeNames}
               holdings={positions}
-              pairs={pairs}
               selectedName={selectedName}
               onSelect={(name) => setSelectedName(name)}
               isAuthed={isAuthed}
               startStrategy={startStrategy}
               setStartStrategy={setStartStrategy}
-              startSymbol={startSymbol}
-              setStartSymbol={setStartSymbol}
               busy={busy}
               actionErr={actionErr}
               onAdd={async () => {
                 setBusy('add')
                 setActionErr('')
                 try {
-                  const res = await api.addStrategy({ strategy: startStrategy, symbol: startSymbol })
+                  const res = await api.addStrategy({ strategy: startStrategy })
                   setSelectedName(res.name)
                   await refreshAll()
                 } catch (e: any) {
@@ -285,8 +331,31 @@ export default function App() {
             />
           )}
 
-          {tab === 'Symbols' && (
-            <SymbolPanel symbols={allSymbols} />
+          {tab === 'Account' && (
+            <AccountPanel
+              isAuthed={isAuthed}
+              engineRunning={system.running}
+              err={accountErr}
+              balance={accountBalance}
+              pendingCount={accountPendingCount}
+              orders={accountOrders}
+            />
+          )}
+
+          {tab === 'Orders' && (
+            <OrdersPanel
+              isAuthed={isAuthed}
+              busy={ordersBusy}
+              strategy={ordersStrategy}
+              setStrategy={setOrdersStrategy}
+              symbol={ordersSymbol}
+              setSymbol={setOrdersSymbol}
+              limit={ordersLimit}
+              setLimit={setOrdersLimit}
+              err={ordersErr}
+              rows={ordersRows as any}
+              onRefresh={() => { refreshOrdersOnce().catch(() => {}) }}
+            />
           )}
 
           {tab === 'Logs' && (

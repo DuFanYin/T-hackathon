@@ -133,7 +133,6 @@ class EventEngine(BaseEngine):
     def _handle_order(self, event: Event) -> None:
         me = self.main_engine
         assert me is not None
-        me.position_engine.on_order(event)
         me.strategy_engine.on_order(event)
         me.risk_engine.on_order(event)
 
@@ -161,7 +160,7 @@ class EventEngine(BaseEngine):
 
         # Gateway only handles order polling on timer.
         me.gateway_engine.on_timer()
-        me.position_engine.process_timer_event()
+        me.strategy_engine.process_timer_event()
         me.strategy_engine.on_timer()
         me.risk_engine.on_timer()
 

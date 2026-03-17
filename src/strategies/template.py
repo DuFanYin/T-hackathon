@@ -29,6 +29,7 @@ class StrategyTemplate:
         self._main = main_engine
         self.strategy_name = strategy_name
         setting = setting or {}
+        self.symbols: list[str] = self._parse_symbols(setting)
         self._timer_trigger: int = int(setting.get("timer_trigger", 1))
         # Each strategy uses one interval for bar data (e.g. 5m, 15m).
         self.interval: Interval = Interval.from_str(setting.get("interval"))
@@ -38,6 +39,25 @@ class StrategyTemplate:
         self._error: bool = False
         self._error_msg: str = ""
         self.write_log(f"Strategy {strategy_name} created")
+
+    @staticmethod
+    def _parse_symbols(setting: dict[str, Any]) -> list[str]:
+        raw = setting.get("symbols")
+        if isinstance(raw, list):
+            items = [str(s).strip().upper() for s in raw if str(s).strip()]
+            return sorted(set(items))
+        if isinstance(raw, str):
+            # Allow "BTCUSDT,ETHUSDT" or "BTCUSDT ETHUSDT"
+            parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
+            return sorted(set(parts))
+        one = setting.get("symbol")
+        if one is not None:
+            s = str(one).strip().upper()
+            return [s] if s else []
+        return []
+
+    def iter_symbols(self) -> list[str]:
+        return list(self.symbols)
 
     # ---------- lifecycle (framework) ----------
 
@@ -124,9 +144,9 @@ class StrategyTemplate:
 
     def clear_all_positions(self) -> None:
         """Close all positions for this strategy (long only: market sell). Raises if any quantity < 0."""
-        if not hasattr(self._main, "position_engine") or self._main.position_engine is None:
+        if not hasattr(self._main, "strategy_engine") or self._main.strategy_engine is None:
             return
-        holding = self._main.position_engine.get_holding(self.strategy_name)
+        holding = self._main.strategy_engine.get_holding(self.strategy_name)
         for symbol, pos in holding.positions.items():
             if pos.quantity == 0:
                 continue

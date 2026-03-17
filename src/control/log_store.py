@@ -18,7 +18,7 @@ class LogStore:
         self._tail: Deque[str] = deque(maxlen=maxlen)
         self._subscribers: Set[asyncio.Queue[str]] = set()
 
-    def append(self, line: str) -> None:
+    def append(self, line: str) -> str:
         # Backend is the single source of timestamp formatting.
         ts = datetime.now().strftime("%m-%d %H:%M:%S")
         msg = f"{ts} | {str(line)}"
@@ -30,6 +30,7 @@ class LogStore:
             except Exception:
                 # remove broken subscriber
                 self._subscribers.discard(q)
+        return msg
 
     def tail(self, n: int = 200) -> list[str]:
         if n <= 0:

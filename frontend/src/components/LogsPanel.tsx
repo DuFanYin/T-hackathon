@@ -32,7 +32,7 @@ export const LogsPanel: FC<LogsPanelProps> = ({
     }
 
     return (
-      <div key={idx} className="flex items-start gap-3 text-sm">
+      <div key={idx} className="flex items-start gap-3 text-xs">
         {timestamp && (
           <span className="shrink-0 font-mono text-emerald-300">
             {timestamp}
@@ -64,7 +64,7 @@ export const LogsPanel: FC<LogsPanelProps> = ({
 
       <div
         ref={logBoxRef}
-        className="flex-1 overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 font-mono leading-relaxed text-sm"
+        className="flex-1 overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 font-mono leading-relaxed text-xs"
       >
         {logs.map(renderLine)}
       </div>

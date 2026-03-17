@@ -6,14 +6,11 @@ interface StrategiesPanelProps {
   running: RunningStrategy[];
   activeNames: Set<string>;
   holdings: Record<string, Holding>;
-  pairs: string[];
   selectedName: string;
   onSelect: (name: string) => void;
   isAuthed: boolean;
   startStrategy: string;
   setStartStrategy: (s: string) => void;
-  startSymbol: string;
-  setStartSymbol: (s: string) => void;
   busy: string;
   actionErr: string;
   onAdd: () => Promise<void>;
@@ -28,14 +25,11 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
   running,
   activeNames,
   holdings,
-  pairs,
   selectedName,
   onSelect,
   isAuthed,
   startStrategy,
   setStartStrategy,
-  startSymbol,
-  setStartSymbol,
   busy,
   actionErr,
   onAdd,
@@ -56,20 +50,6 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
           {available.map((s) => (
             <option key={s} value={s}>
               {s}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-white/80">Symbol</label>
-        <select
-          className="min-w-[220px] rounded-xl border border-white/20 bg-black/40 px-2.5 py-2 text-sm text-slate-50 outline-none ring-0 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40"
-          value={startSymbol}
-          onChange={(e) => setStartSymbol(e.target.value)}
-        >
-          {(pairs.length ? pairs : [startSymbol]).map((p) => (
-            <option key={p} value={p}>
-              {p}
             </option>
           ))}
         </select>

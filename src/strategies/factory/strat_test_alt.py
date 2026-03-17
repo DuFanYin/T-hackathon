@@ -23,7 +23,8 @@ class StratTestAlt(StrategyTemplate):
         setting.setdefault("timer_trigger", 3)
         super().__init__(main_engine=main_engine, strategy_name=strategy_name, setting=setting)
 
-        self.symbol: str = str(setting.get("symbol", "BTCUSDT"))
+        # Prefer template-parsed multi-symbol config; fall back to BTCUSDT.
+        self.symbol: str = (self.symbols[0] if self.symbols else "BTCUSDT")
         self.quantity: float = float(setting.get("quantity", 0.001))
 
         self._order_attempts: int = 0
@@ -35,10 +36,10 @@ class StratTestAlt(StrategyTemplate):
         return self._order_attempts
 
     def on_order(self, event: Any) -> None:
-        # PositionEngine processes EVENT_ORDER before StrategyEngine, so by the time we get here
-        # holdings are already updated and safe to log.
+        # StrategyEngine applies fills to holdings before forwarding events to strategies,
+        # so by the time we get here holdings are already updated and safe to log.
         super().on_order(event)
-        holding = self._main.position_engine.get_holding(self.strategy_name)
+        holding = self._main.strategy_engine.get_holding(self.strategy_name)
         pos_summary = {s: p.quantity for s, p in holding.positions.items() if p.quantity != 0}
         self.write_log(f"positions={pos_summary}")
 

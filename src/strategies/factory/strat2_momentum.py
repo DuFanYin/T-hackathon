@@ -59,6 +59,9 @@ class Strat2Momentum(StrategyTemplate):
         s.setdefault("interval", "5m")  # This strategy uses 5m bars
         super().__init__(main_engine, strategy_name, s)
 
+        # Strategy-owned symbol universe (no UI input needed).
+        self.symbols = [f"{c}USDT" for c in TRACKED_COINS]
+
         # ── Order symbol format ──
         # GatewayEngine expects internal symbols like BTCUSDT so it can convert to Roostoo pairs BTC/USD.
         # Keep configurable, but default to gateway-compatible format.
@@ -95,20 +98,20 @@ class Strat2Momentum(StrategyTemplate):
         return f"{coin}USDT"
 
     def _log_reconciliation(self) -> None:
-        """Log Strat2 internal positions vs PositionEngine for reconciliation (self-contained)."""
+        """Log Strat2 internal positions vs engine holdings for reconciliation (self-contained)."""
         strat_pos = {self._format_order_symbol(c): p["qty"] for c, p in self._positions.items()}
         eng_pos = {}
-        if hasattr(self._main, "position_engine") and self._main.position_engine:
-            holding = self._main.position_engine.get_holding(self.strategy_name)
+        if hasattr(self._main, "strategy_engine") and self._main.strategy_engine:
+            holding = self._main.strategy_engine.get_holding(self.strategy_name)
             eng_pos = {s: p.quantity for s, p in holding.positions.items() if p.quantity != 0}
         diff = set(strat_pos.keys()) ^ set(eng_pos.keys())
         if diff:
             self.write_log(
-                f"RECONCILE: Strat2={list(strat_pos)} | PositionEngine={list(eng_pos)} | "
+                f"RECONCILE: Strat2={list(strat_pos)} | Engine={list(eng_pos)} | "
                 f"mismatch={list(diff)} — check fill/order status"
             )
         elif strat_pos:
-            self.write_log(f"RECONCILE: OK | Strat2={strat_pos} PositionEngine={eng_pos}")
+            self.write_log(f"RECONCILE: OK | Strat2={strat_pos} Engine={eng_pos}")
 
     # ──────────────────────────────────────────
     # Lifecycle

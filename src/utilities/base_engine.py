@@ -30,6 +30,23 @@ class BaseEngine:
         """The main engine this engine is attached to."""
         return self._main_engine
 
+    def log(self, message: str) -> None:
+        """
+        Write a system log line (fanout to UI + SSE).
+        Safe no-op if engine isn't attached yet.
+        """
+        me = self._main_engine
+        if me is None:
+            return
+        try:
+            if hasattr(me, "write_log") and callable(getattr(me, "write_log")):
+                me.write_log(message)
+            elif hasattr(me, "log_store") and me.log_store is not None:
+                me.log_store.append(message)
+        except Exception:
+            # Logging must never break engine logic.
+            return
+
     def close(self) -> None:
         """Override in subclasses for cleanup."""
         pass

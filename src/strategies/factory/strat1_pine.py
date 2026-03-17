@@ -39,6 +39,7 @@ class Strat1Pine(StrategyTemplate):
         super().__init__(main_engine, strategy_name, setting or {})
         s = setting or {}
         self.symbol = str(s.get("symbol", "BTCUSDT"))
+        self.symbols = [self.symbol]
         self.pivot_len = int(s.get("pivot_len", 3))
         self.rr = float(s.get("rr", 2.0))
         self.use_limit = bool(s.get("use_limit", True))
@@ -67,7 +68,7 @@ class Strat1Pine(StrategyTemplate):
         if len(last_bars) < 4:
             return
 
-        holding = self._main.position_engine.get_holding(self.strategy_name)
+        holding = self._main.strategy_engine.get_holding(self.strategy_name)
         pos = holding.positions.get(self.symbol)
         position_size = pos.quantity if pos else 0.0
         flat = position_size == 0.0

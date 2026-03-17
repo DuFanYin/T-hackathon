@@ -71,6 +71,13 @@ class GatewayEngine(BaseEngine):
         # strategy_name -> set of currently pending order_ids (for quick lookup/inspection)
         self._strategy_pending: dict[str, set[str]] = {}
 
+        # ---------------- cached account state (refreshed by engine timer, NOT by UI) ----------------
+        self._cached_balance: dict[str, Any] | None = None
+        self._cached_pending_count: dict[str, Any] | None = None
+        self._cached_balance_ts: float | None = None
+        self._cached_pending_count_ts: float | None = None
+        self._account_cache_interval_sec: float = 10.0
+
     # ---------------- helpers ----------------
 
     def _headers(self, params: Dict[str, Any]) -> Dict[str, str]:
@@ -95,19 +102,19 @@ class GatewayEngine(BaseEngine):
             url = f"{self.base_url}{path}"
             resp = requests.get(url, params=params, headers=headers, timeout=3.0)
             if resp.status_code != 200:
-                print(f"[Gateway] GET {url} failed status={resp.status_code} body={resp.text}")
+                self.log(f"[Gateway] GET {url} failed status={resp.status_code} body={resp.text}")
                 return None
             try:
                 body = resp.json()
             except Exception as e:
-                print(f"[Gateway] GET {url} json error: {e} body={resp.text}")
+                self.log(f"[Gateway] GET {url} json error: {e} body={resp.text}")
                 return None
             if not isinstance(body, dict):
-                print(f"[Gateway] GET {url} unexpected JSON type: {type(body)}")
+                self.log(f"[Gateway] GET {url} unexpected JSON type: {type(body)}")
                 return None
             return body
         except Exception as e:
-            print(f"[Gateway] GET {path} exception: {e}")
+            self.log(f"[Gateway] GET {path} exception: {e}")
             return None
 
     def _request_post(self, path: str, data: Dict[str, Any], signed: bool) -> Dict[str, Any] | None:
@@ -116,19 +123,19 @@ class GatewayEngine(BaseEngine):
             url = f"{self.base_url}{path}"
             resp = requests.post(url, data=data, headers=headers, timeout=3.0)
             if resp.status_code != 200:
-                print(f"[Gateway] POST {url} failed status={resp.status_code} body={resp.text}")
+                self.log(f"[Gateway] POST {url} failed status={resp.status_code} body={resp.text}")
                 return None
             try:
                 body = resp.json()
             except Exception as e:
-                print(f"[Gateway] POST {url} json error: {e} body={resp.text}")
+                self.log(f"[Gateway] POST {url} json error: {e} body={resp.text}")
                 return None
             if not isinstance(body, dict):
-                print(f"[Gateway] POST {url} unexpected JSON type: {type(body)}")
+                self.log(f"[Gateway] POST {url} unexpected JSON type: {type(body)}")
                 return None
             return body
         except Exception as e:
-            print(f"[Gateway] POST {path} exception: {e}")
+            self.log(f"[Gateway] POST {path} exception: {e}")
             return None
 
     @staticmethod
@@ -157,16 +164,17 @@ class GatewayEngine(BaseEngine):
 
     def get_exchange_info(self) -> Dict[str, Any] | None:
         """GET /v3/exchangeInfo (no auth). Adds explicit error logging on failure."""
+        self.log("[Gateway] system init: GET /v3/exchangeInfo")
         body = self._request_get("/v3/exchangeInfo", params={}, signed=False)
         if body is None:
-            print("[Gateway] /v3/exchangeInfo returned None (network/parse failure)")
+            self.log("[Gateway] /v3/exchangeInfo returned None (network/parse failure)")
             return None
         if not isinstance(body, dict):
-            print(f"[Gateway] /v3/exchangeInfo unexpected body type: {type(body)}")
+            self.log(f"[Gateway] /v3/exchangeInfo unexpected body type: {type(body)}")
             return None
         if body.get("Success") is False:
             # Log full body so we can see error code/message from Roostoo.
-            print(f"[Gateway] /v3/exchangeInfo error: {body}")
+            self.log(f"[Gateway] /v3/exchangeInfo error: {body}")
         return body
 
     def get_ticker(self, symbol: str | None = None) -> Dict[str, Any] | None:
@@ -247,8 +255,77 @@ class GatewayEngine(BaseEngine):
         return self._request_post("/v3/query_order", data=payload, signed=True)
 
     def on_timer(self) -> None:
-        """Poll orders only; market data is owned by MarketEngine.on_timer()."""
+        """Poll orders + refresh cached account state; market data is owned by MarketEngine.on_timer()."""
         self._poll_orders_and_emit()
+        self._refresh_account_cache()
+
+    # ---------------- cached account snapshot (for control UI) ----------------
+
+    def _refresh_account_cache(self) -> None:
+        """
+        Refresh cached balance/pending_count on a throttle.
+
+        Important: control-plane UI reads cached values only; it must not drive exchange calls.
+        """
+        now = time.time()
+        last = min(
+            (t for t in (self._cached_balance_ts, self._cached_pending_count_ts) if t is not None),
+            default=0.0,
+        )
+        if now - last < self._account_cache_interval_sec:
+            return
+
+        try:
+            self.log("[Gateway] query: /v3/balance (cache refresh)")
+            bal = self.get_balance()
+            if isinstance(bal, dict):
+                # Roostoo can return SpotWallet instead of Wallet.
+                # Normalize so the control UI has a consistent field.
+                if "Wallet" not in bal and isinstance(bal.get("SpotWallet"), dict):
+                    bal["Wallet"] = bal.get("SpotWallet")
+                self._cached_balance = bal
+                self._cached_balance_ts = now
+        except Exception:
+            pass
+
+        try:
+            self.log("[Gateway] query: /v3/pending_count (cache refresh)")
+            pc = self.pending_count()
+            if isinstance(pc, dict):
+                self._cached_pending_count = pc
+                self._cached_pending_count_ts = now
+        except Exception:
+            pass
+
+    def get_cached_balance(self) -> dict[str, Any] | None:
+        return self._cached_balance
+
+    def get_cached_pending_count(self) -> dict[str, Any] | None:
+        return self._cached_pending_count
+
+    def get_cached_orders_snapshot(self) -> dict[str, Any]:
+        """
+        Snapshot of order-related cached state without hitting the exchange.
+
+        - pending_by_strategy: current pending order ids per strategy (from local tracking)
+        - tracks: last known per-order status/fill (from polling)
+        """
+        return {
+            "pending_by_strategy": self.get_pending_orders(),
+            "tracks": [
+                {
+                    "order_id": t.order_id,
+                    "strategy_name": t.strategy_name,
+                    "symbol": t.symbol,
+                    "side": t.side,
+                    "last_status": t.last_status,
+                    "last_filled_qty": t.last_filled_qty,
+                }
+                for t in self._order_tracks.values()
+            ],
+            "cached_balance_ts": self._cached_balance_ts,
+            "cached_pending_count_ts": self._cached_pending_count_ts,
+        }
 
     # ---------------- order polling -> events ----------------
 
@@ -286,7 +363,6 @@ class GatewayEngine(BaseEngine):
         Poll /v3/query_order for tracked orders and synchronously update engines.
 
         To keep ordering intuitive for strategies, we directly call:
-        - position_engine.on_order(OrderData)
         - strategy_engine.on_order(OrderData)
         - risk_engine.on_order(OrderData)
 
@@ -295,6 +371,9 @@ class GatewayEngine(BaseEngine):
         me = self.main_engine
         if not self._order_tracks or me is None:
             return
+
+        # Query calls only (place/cancel are NOT counted as "query").
+        self.log(f"[Gateway] query: /v3/query_order batch size={len(self._order_tracks)}")
 
         finished: list[str] = []
         for oid, track in list(self._order_tracks.items()):
@@ -335,9 +414,13 @@ class GatewayEngine(BaseEngine):
                     strategy_name=track.strategy_name,
                     ts=None,
                 )
+                # Persist the latest order state (sqlite) if configured on the main engine.
+                if hasattr(me, "order_store") and me.order_store is not None:
+                    try:
+                        me.order_store.upsert(data, raw=detail if isinstance(detail, dict) else None)
+                    except Exception:
+                        pass
                 # Synchronously update engines so strategies see up-to-date positions
-                if hasattr(me, "position_engine"):
-                    me.position_engine.on_order(data)
                 if hasattr(me, "strategy_engine"):
                     me.strategy_engine.on_order(data)
                 if hasattr(me, "risk_engine"):

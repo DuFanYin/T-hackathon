@@ -1,6 +1,6 @@
-import type { FC } from 'react';
+import { useEffect, useState, type FC } from 'react';
 
-export type Tab = 'Strategies' | 'Symbols' | 'Logs';
+export type Tab = 'Strategies' | 'Account' | 'Orders' | 'Logs';
 
 interface SidebarProps {
   tab: Tab;
@@ -33,7 +33,22 @@ export const Sidebar: FC<SidebarProps> = ({
   onStartLive,
   onStopSystem,
 }) => {
-  const tabs: Tab[] = ['Strategies', 'Symbols', 'Logs'];
+  const tabs: Tab[] = ['Strategies', 'Account', 'Orders', 'Logs'];
+  const [now, setNow] = useState<Date>(() => new Date());
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const clockText = (() => {
+    try {
+      return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+      return '';
+    }
+  })();
+
   return (
     <aside className="flex h-screen flex-col justify-between border-r border-white/10 bg-black/40 px-4 py-5">
       <div>
@@ -189,10 +204,17 @@ export const Sidebar: FC<SidebarProps> = ({
           })}
         </nav>
       </div>
-      <div className="mt-6 border-t border-white/10 pt-3 text-[11px] text-white/40">
-        <div className="font-mono uppercase tracking-wide">Mode</div>
-        <div className="text-white/60">
-          {pills.ok ? 'Engine reachable' : 'Engine down or starting'}
+      <div className="mt-6 border-t border-white/10 pt-3 text-[11px]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="font-mono uppercase tracking-wide text-white/40">Mode</div>
+            <div className="text-white/60">
+              {pills.ok ? 'Engine reachable' : 'Engine down or starting'}
+            </div>
+          </div>
+          <div className="select-none font-mono text-[12px] tracking-wide text-emerald-300">
+            {clockText}
+          </div>
         </div>
       </div>
     </aside>

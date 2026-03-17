@@ -4,15 +4,19 @@ Main engine: composition root and façade for the trading system.
 
 from __future__ import annotations
 
+import os
+import threading
+from logging.handlers import RotatingFileHandler
+
 from typing import Optional
 
 from .engine_event import Event, EventEngine
 from .engine_gateway import GatewayEngine
 from .engine_market import MarketEngine
-from .engine_position import PositionEngine
 from .engine_risk import RiskEngine
 from .engine_strategy import StrategyEngine
 from src.control.log_store import LogStore
+from src.control.order_store import OrderStore
 
 
 class MainEngine:
@@ -29,6 +33,10 @@ class MainEngine:
         self.active_pairs: list[str] = []  # pairs actively traded/polled (added when strategies are added)
         self.env_mode: str = env_mode.strip().lower() if env_mode else "mock"
         self.log_store: LogStore = LogStore()
+        self.order_store: OrderStore = OrderStore()
+        self._log_file_handler: RotatingFileHandler | None = None
+        self._log_file_lock = threading.Lock()
+        self.write_log(f"[System] init: starting (mode={self.env_mode})")
 
         self.event_engine: EventEngine = event_engine or EventEngine(main_engine=self)
         if event_engine is not None:
@@ -38,11 +46,12 @@ class MainEngine:
         self.market_engine = MarketEngine(main_engine=self)
         self.gateway_engine = GatewayEngine(main_engine=self, env_mode=self.env_mode)
         self.strategy_engine = StrategyEngine(main_engine=self)
-        self.position_engine = PositionEngine(main_engine=self)
         self.risk_engine = RiskEngine(main_engine=self)
+        self.write_log("[System] init: engines constructed")
 
         # One-time discovery of tradable pairs from the exchange; cache the AVAILABLE list only.
         try:
+            self.write_log("[System] init: discovering trading pairs via /v3/exchangeInfo")
             info = self.gateway_engine.get_exchange_info()
             pairs: list[str] = []
             if isinstance(info, dict):
@@ -59,33 +68,21 @@ class MainEngine:
                 # Poll all pairs with one bulk /v3/ticker call per tick.
                 self.gateway_engine.trading_pairs = list(pairs)
                 self.market_engine.set_symbols(pairs)
+                self.write_log(f"[System] init: discovered {len(pairs)} trading pairs")
             else:
-                print("[MainEngine] No trading pairs discovered from /v3/exchangeInfo; system will run without market data.")
+                self.write_log("[System] init: no trading pairs discovered from /v3/exchangeInfo")
         except Exception as e:
             # Discovery failure should not stop the engine; market data will be limited.
-            print(f"[MainEngine] exchangeInfo discovery failed: {e}")
+            self.write_log(f"[System] init: exchangeInfo discovery failed: {e}")
 
         self.event_engine.start()
+        self.write_log("[System] init: event engine started")
 
-    def add_strategy(self, strategy_name: str, trading_pair: str) -> None:
-        """Add a strategy for the trading pair. strategy_name is the class name (from AVAILABLE_STRATEGIES)."""
-        self._ensure_pair_active(trading_pair)
-        self.strategy_engine.add_strategy_for_pair(strategy_name, trading_pair)
-
-    def _ensure_pair_active(self, trading_pair: str) -> None:
-        """Ensure the trading pair is subscribed for market polling and cached in MarketEngine."""
-        symbol = str(trading_pair).strip().upper()
-        if not symbol:
-            return
-
-        if symbol not in self.active_pairs:
-            self.active_pairs.append(symbol)
-
-        if symbol not in self.gateway_engine.trading_pairs:
-            self.gateway_engine.trading_pairs.append(symbol)
-
-        # Pre-create buffers for this symbol (safe to call repeatedly).
-        self.market_engine.set_symbols([symbol])
+    def add_strategy(self, strategy_name: str) -> None:
+        """
+        Add a strategy instance (no symbol input).
+        """
+        self.strategy_engine.add_strategy_by_name(strategy_name)
 
     def get_strategy(self, strategy_name: str):
         """Return the strategy instance with the given name (e.g. Strat1Pine_BTCUSDT), or None."""
@@ -109,7 +106,7 @@ class MainEngine:
 
         - Calls stop_strategy (if present)
         - Removes from StrategyEngine registry
-        - Clears PositionEngine holdings for this strategy
+        - Clears StrategyEngine holdings for this strategy
         """
         if self.strategy_engine.get_strategy(strategy_name) is not None:
             try:
@@ -118,23 +115,7 @@ class MainEngine:
                 # Stop errors should not prevent deletion.
                 pass
         self.strategy_engine.remove_strategy(strategy_name)
-        self.position_engine.remove_strategy_holding(strategy_name)
-
-    # ------------------------------------------------------------------
-    # Connectivity façade
-    # ------------------------------------------------------------------
-
-    def connect(self) -> None:
-        """Delegate to gateway (if it implements connect)."""
-        if hasattr(self.gateway_engine, "connect"):
-            self.gateway_engine.connect()
-
-    def disconnect(self) -> None:
-        """Delegate to gateway and stop the event engine."""
-        if hasattr(self.gateway_engine, "disconnect"):
-            self.gateway_engine.disconnect()
-
-        self.event_engine.stop()
+        self.strategy_engine.remove_strategy_holding(strategy_name)
 
     # ------------------------------------------------------------------
     # Gateway Public API façade (Roostoo v3)
@@ -209,6 +190,43 @@ class MainEngine:
     def put_event(self, event_type: str, data: object | None = None) -> None:
         """Enqueue an event on the event engine."""
         self.event_engine.put(Event(event_type, data))
+
+    def write_log(self, message: str) -> None:
+        """Append a line to the system log stream (used by engines and control-plane UI)."""
+        try:
+            msg = self.log_store.append(message)
+
+            # Persist logs on disk (rotating) under data/logs/.
+            # Defaults can be overridden via env:
+            # - LOG_FILE (default: data/logs/system.log)
+            # - LOG_MAX_BYTES (default: 5_000_000)
+            # - LOG_BACKUP_COUNT (default: 5)
+            try:
+                handler = self._log_file_handler
+                if handler is None:
+                    with self._log_file_lock:
+                        handler = self._log_file_handler
+                        if handler is None:
+                            log_file = (os.getenv("LOG_FILE") or "data/logs/system.log").strip()
+                            max_bytes = int(os.getenv("LOG_MAX_BYTES") or "5000000")
+                            backup_count = int(os.getenv("LOG_BACKUP_COUNT") or "5")
+                            os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+                            handler = RotatingFileHandler(
+                                log_file,
+                                maxBytes=max_bytes,
+                                backupCount=backup_count,
+                                encoding="utf-8",
+                            )
+                            self._log_file_handler = handler
+                if handler is not None:
+                    handler.stream.write(msg + "\n")
+                    handler.flush()
+            except Exception:
+                # Never break engine due to file logging.
+                pass
+        except Exception:
+            # Logging must never crash the engine.
+            pass
 
     # ------------------------------------------------------------------
     # Intent handling (delegates to EventEngine)

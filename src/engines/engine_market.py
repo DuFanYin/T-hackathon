@@ -45,13 +45,13 @@ class MarketEngine(BaseEngine):
         Timer hook: refresh market data from Binance for all subscribed intervals.
 
         - Determines which intervals are needed (from active strategies).
-        - Uses main_engine.trading_pairs as the symbol universe.
+        - Uses main_engine.active_pairs (preferred) as the symbol universe.
         """
         me = self.main_engine
         if me is None:
             return
 
-        symbols: List[str] = getattr(me, "trading_pairs", []) or []
+        symbols: List[str] = getattr(me, "active_pairs", None) or getattr(me, "trading_pairs", []) or []
         if not symbols:
             return
 

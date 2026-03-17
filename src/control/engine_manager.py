@@ -54,7 +54,7 @@ class EngineManager:
             if self._engine is None:
                 return SystemStatus(running=False, mode=None)
             try:
-                self._engine.disconnect()
+                self._engine.event_engine.stop()
             except Exception:
                 pass
             self._engine = None
