@@ -9,233 +9,142 @@ body {
 }
 
 .app {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  height: 100vh;
-  gap: 0;
-}
-
-:root {
-  --space-xs: 4px;
-  --space-sm: 8px;
-  --space-md: 12px;
-  --space-lg: 16px;
-  --space-xl: 24px;
+  @apply grid min-h-screen;
+  grid-template-columns: 240px minmax(0, 1fr);
 }
 
 .sidebar {
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  padding: var(--space-lg);
-  background: rgba(0, 0, 0, 0.25);
+  @apply border-r border-white/10 bg-black/40 p-4;
 }
 
 .brand {
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  margin-bottom: var(--space-sm);
-  font-size: 16px;
+  @apply mb-2 text-base font-semibold tracking-wide;
 }
 
 .meta {
-  font-size: 12px;
-  opacity: 0.75;
-  line-height: 1.4;
-  margin-bottom: var(--space-lg);
+  @apply mb-4 text-xs leading-relaxed text-white/75;
 }
 
 .nav {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
+  @apply flex flex-col gap-1;
 }
 
 .nav button {
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.02);
-  color: inherit;
-  cursor: pointer;
+  @apply cursor-pointer rounded-lg border border-white/10 bg-white/5 px-2.5 py-2 text-left text-sm text-slate-100 transition hover:border-white/30 hover:bg-white/10;
 }
 
 .nav button.active {
-  border-color: rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.06);
+  @apply border-white/40 bg-white/15;
 }
 
 .main {
-  padding: var(--space-lg) var(--space-lg) var(--space-xl);
-  overflow: auto;
+  @apply flex min-h-screen flex-col gap-4 overflow-auto p-4;
 }
 
 .header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: var(--space-md);
-  margin-bottom: var(--space-sm);
+  @apply mb-2 flex items-baseline justify-between gap-3;
 }
 
 .main > .card {
-  margin-top: var(--space-xl);
+  @apply mt-6;
 }
 
 .header-title {
-  font-size: 16px;
-  margin: 0;
-  font-weight: 500;
+  @apply m-0 text-base font-medium text-slate-50;
 }
 
 .pill {
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  opacity: 0.9;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  @apply inline-flex items-center gap-1.5 rounded-full border border-white/20 px-2 py-1 text-xs text-slate-100/90;
 }
 
 .pill.ok {
-  border-color: rgba(52, 211, 153, 0.7);
+  @apply border-emerald-400/80;
 }
 
 .pill.bad {
-  border-color: rgba(248, 113, 113, 0.7);
+  @apply border-rose-400/80;
 }
 
 .card {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: var(--space-md);
-  background: rgba(255, 255, 255, 0.02);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  @apply rounded-xl border border-white/10 bg-white/5 p-3 shadow-[0_10px_30px_rgba(0,0,0,0.5)];
 }
 
 .card + .card {
-  margin-top: var(--space-md);
+  @apply mt-3;
 }
 
 .row {
-  display: flex;
-  gap: var(--space-md);
-  flex-wrap: wrap;
-  align-items: end;
+  @apply flex flex-wrap items-end gap-3;
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
+  @apply flex flex-col gap-1;
 }
 
 .field label {
-  font-size: 12px;
-  opacity: 0.8;
+  @apply text-xs text-white/80;
 }
 
 .field input,
 .field select {
-  min-width: 220px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.25);
-  color: inherit;
+  @apply min-w-[220px] rounded-xl border border-white/20 bg-black/40 px-2.5 py-2 text-sm text-slate-50 outline-none ring-0 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40;
 }
 
 .btn {
-  padding: 8px 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  cursor: pointer;
-  color: inherit;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 13px;
-  transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
-}
-
-.btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
-.btn:active:not(:disabled) {
-  transform: translateY(1px);
+  @apply inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/20 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
 }
 
 .btn.primary {
-  border-color: rgba(52, 211, 153, 0.7);
+  @apply border-emerald-400/80;
 }
 
 .btn.danger {
-  border-color: rgba(248, 113, 113, 0.7);
+  @apply border-rose-400/80;
 }
 
 .table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: var(--space-md);
+  @apply mt-3 w-full border-collapse;
 }
 
 .table-wrapper {
-  margin-top: var(--space-sm);
-  max-height: 520px;
-  overflow: auto;
+  @apply mt-2 max-h-[520px] overflow-auto;
 }
 
 .table th,
 .table td {
-  padding: 8px 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 13px;
+  @apply border-b border-white/10 px-2 py-2 text-[13px];
 }
 
 .table th {
-  text-align: left;
-  font-size: 12px;
-  opacity: 0.8;
-  font-weight: 600;
+  @apply text-left text-xs font-semibold text-white/80;
 }
 
 .table td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
+  @apply text-right tabular-nums;
 }
 
 .table tr.selected td {
-  background: rgba(255, 255, 255, 0.06);
+  @apply bg-white/10;
 }
 
 .price-up {
-  color: #f97373;
+  @apply text-rose-400;
 }
 
 .price-down {
-  color: #4ade80;
+  @apply text-emerald-400;
 }
 
 .muted {
-  opacity: 0.7;
+  @apply text-white/70;
 }
 
 .mono {
-  font-family: inherit;
-  font-size: 12px;
-  letter-spacing: 0.01em;
+  @apply text-[12px] tracking-tight;
 }
 
 .logs {
-  height: 520px;
-  overflow: auto;
-  white-space: pre-wrap;
-  line-height: 1.35;
+  @apply h-[520px] overflow-auto whitespace-pre-wrap leading-tight;
 }
 
 @media (max-width: 920px) {
@@ -243,15 +152,13 @@ body {
     grid-template-columns: 1fr;
   }
   .sidebar {
-    border-right: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    @apply border-b border-r-0;
   }
   .nav {
-    flex-direction: row;
-    flex-wrap: wrap;
+    @apply flex-row flex-wrap;
   }
   .nav button {
-    flex: 1 1 120px;
+    @apply basis-[120px] flex-1;
   }
 }
 

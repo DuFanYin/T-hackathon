@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -36,12 +36,19 @@ def _holding_to_dict(holding) -> dict[str, Any]:
 def create_app(engine_manager: EngineManager) -> FastAPI:
     app = FastAPI(title="T-hackathon Control API", version="0.1")
 
-    cors_origins_env = str(getattr(__import__("os"), "getenv")("CONTROL_CORS_ORIGINS", "")).strip()
-    allow_origins = (
-        [o.strip() for o in cors_origins_env.split(",") if o.strip()]
-        if cors_origins_env
-        else ["http://localhost:5173", "http://127.0.0.1:5173"]
-    )
+    os_mod = __import__("os")
+    cors_origins_env = str(getattr(os_mod, "getenv")("CONTROL_CORS_ORIGINS", "")).strip()
+    environment = str(getattr(os_mod, "getenv")("ENVIRONMENT", "local")).strip().lower()
+
+    allow_origins: list[str] = []
+    if cors_origins_env:
+        allow_origins.extend([o.strip() for o in cors_origins_env.split(",") if o.strip()])
+
+    # In local mode always permit the Vite dev origins, even if CONTROL_CORS_ORIGINS is set.
+    if environment == "local":
+        for o in ("http://localhost:5173", "http://127.0.0.1:5173"):
+            if o not in allow_origins:
+                allow_origins.append(o)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,
@@ -50,11 +57,27 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         allow_headers=["*"],
     )
 
+    admin_token_env = str(getattr(os_mod, "getenv")("CONTROL_ADMIN_TOKEN", "")).strip() or None
+
+    def _require_admin(x_admin_token: str | None = Header(default=None, alias="x-admin-token")) -> None:
+        """
+        Simple shared-token guard for mutating endpoints.
+        If CONTROL_ADMIN_TOKEN is not set, all calls are allowed (dev mode).
+        """
+        if admin_token_env is None:
+            return
+        if not x_admin_token or x_admin_token != admin_token_env:
+            raise HTTPException(status_code=401, detail="admin token required")
+
     def _eng():
         try:
             return engine_manager.require()
         except Exception as e:
             raise HTTPException(status_code=503, detail=str(e))
+
+    @app.get("/auth/check")
+    def auth_check(_: None = Depends(_require_admin)):
+        return {"ok": True}
 
     @app.get("/system/status")
     def system_status():
@@ -62,7 +85,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"running": st.running, "mode": st.mode}
 
     @app.post("/system/start")
-    def system_start(payload: dict[str, Any]):
+    def system_start(payload: dict[str, Any], _: None = Depends(_require_admin)):
         mode = str(payload.get("mode", "")).strip().lower()
         if mode not in ("mock", "real"):
             raise HTTPException(status_code=400, detail="mode must be mock or real")
@@ -70,7 +93,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"running": st.running, "mode": st.mode}
 
     @app.post("/system/stop")
-    def system_stop():
+    def system_stop(_: None = Depends(_require_admin)):
         st = engine_manager.stop()
         return {"running": st.running, "mode": st.mode}
 
@@ -105,7 +128,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"running": items}
 
     @app.post("/strategies/start")
-    def strategy_start(payload: dict[str, Any]):
+    def strategy_start(payload: dict[str, Any], _: None = Depends(_require_admin)):
         main_engine = _eng()
         # Accept either {strategy, symbol} or {name}
         name = str(payload.get("name", "")).strip()
@@ -131,7 +154,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"ok": True, "name": name}
 
     @app.post("/strategies/stop")
-    def strategy_stop(payload: dict[str, Any]):
+    def strategy_stop(payload: dict[str, Any], _: None = Depends(_require_admin)):
         main_engine = _eng()
         name = str(payload.get("name", "")).strip()
         if not name:
@@ -143,7 +166,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"ok": True, "name": name}
 
     @app.post("/strategies/add")
-    def strategy_add(payload: dict[str, Any]):
+    def strategy_add(payload: dict[str, Any], _: None = Depends(_require_admin)):
         main_engine = _eng()
         strategy = str(payload.get("strategy", "")).strip()
         symbol = str(payload.get("symbol", "")).strip().upper()
@@ -159,7 +182,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"ok": True, "name": full_name}
 
     @app.post("/strategies/init")
-    def strategy_init(payload: dict[str, Any]):
+    def strategy_init(payload: dict[str, Any], _: None = Depends(_require_admin)):
         main_engine = _eng()
         name = str(payload.get("name", "")).strip()
         if not name:
@@ -171,7 +194,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"ok": True, "name": name}
 
     @app.post("/strategies/delete")
-    def strategy_delete(payload: dict[str, Any]):
+    def strategy_delete(payload: dict[str, Any], _: None = Depends(_require_admin)):
         main_engine = _eng()
         name = str(payload.get("name", "")).strip()
         if not name:
@@ -230,10 +253,23 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
 
     @app.get("/logs/stream")
     async def logs_stream():
-        main_engine = _eng()
+        """
+        Stream logs via Server-Sent Events.
+
+        If the trading engine is not running yet, return an empty SSE stream (200)
+        instead of failing, so the frontend can stay connected while waiting.
+        """
+        # Use the manager directly so we can tolerate "not running" without raising.
+        main_engine = engine_manager.get()
+
+        if main_engine is None:
+            async def empty_gen():
+                if False:
+                    yield ""  # pragma: no cover
+            return StreamingResponse(empty_gen(), media_type="text/event-stream")
+
         async def event_gen():
             async for line in main_engine.log_store.subscribe():
-                # SSE: "data: <json>\n\n"
                 payload = json.dumps({"line": line}, ensure_ascii=False)
                 yield f"data: {payload}\n\n"
 

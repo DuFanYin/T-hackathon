@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-AWS-friendly control-plane entrypoint:
+Control-plane entrypoint:
 
-- Creates MainEngine (mock|real)
-- Auto-loads strategies_config.json and starts all strategies (same as main.py)
+- Loads .env
+- Creates EngineManager
 - Starts FastAPI server for remote control/monitoring
 
 Run:
-  python api_server.py mock
-  python api_server.py real
+  python api_server.py
 """
 
 from __future__ import annotations
@@ -34,15 +33,6 @@ def main() -> int:
     port = int(os.getenv("CONTROL_PORT", "8000"))
 
     mgr = EngineManager()
-    # Optional: allow starting system from CLI arg.
-    if len(sys.argv) >= 2:
-        arg = str(sys.argv[1]).strip().lower()
-        if arg in ("mock", "real"):
-            print(f"[API] Auto-start system mode={arg}")
-            mgr.start(mode=arg)  # type: ignore[arg-type]
-        else:
-            print("[API] Usage: python api_server.py [mock|real]")
-            return 2
 
     app = create_app(mgr)
 

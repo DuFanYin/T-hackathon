@@ -47,55 +47,65 @@ export const SymbolPanel: FC<SymbolPanelProps> = ({ symbols }) => {
   }, [symbols]);
 
   return (
-    <div className="card">
-      <div className="row" style={{ marginBottom: 'var(--space-md)' }}>
-        <div className="muted">
-          Realtime market snapshots for all symbols. Last price and 24h change highlight moves.
-        </div>
+    <div className="flex h-full w-full flex-col rounded-xl border border-white/10 bg-white/5 p-4 shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
+      <div className="mb-2 text-xs text-white/70">
+        Realtime market snapshots for all symbols. Last price and 24h change highlight moves.
       </div>
       {entries.length === 0 ? (
-        <div className="muted">No symbol data yet. Start the system and wait for ticks.</div>
+        <div className="text-xs text-white/70">
+          No symbol data yet. Start the system and wait for ticks.
+        </div>
       ) : (
-        <div className="table-wrapper">
-          <table className="table">
+        <div className="mt-2 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/40">
+          <table className="w-full border-collapse text-left text-[13px]">
             <thead>
-              <tr>
-                <th>Symbol</th>
-                <th className="num">Last</th>
-                <th className="num">Bid</th>
-                <th className="num">Ask</th>
-                <th className="num">24h Vol</th>
-                <th className="num">24h Notional</th>
-                <th className="num">24h Change</th>
+              <tr className="bg-white/5 text-xs text-white/80">
+                <th className="px-2 py-2">Symbol</th>
+                <th className="px-2 py-2 text-right">Last</th>
+                <th className="px-2 py-2 text-right">Bid</th>
+                <th className="px-2 py-2 text-right">Ask</th>
+                <th className="px-2 py-2 text-right">24h Vol</th>
+                <th className="px-2 py-2 text-right">24h Notional</th>
+                <th className="px-2 py-2 text-right">24h Change</th>
               </tr>
             </thead>
             <tbody>
               {entries.map((s) => (
-                <tr key={s.symbol}>
-                  <td>{s.symbol}</td>
+                <tr key={s.symbol} className="border-t border-white/5 hover:bg-white/10">
+                  <td className="px-2 py-1.5 text-xs text-slate-100">{s.symbol}</td>
                   <td
-                    className={`num ${
+                    className={[
+                      'px-2 py-1.5 text-right tabular-nums',
                       directions[s.symbol] === 'up'
-                        ? 'price-up'
+                        ? 'text-rose-400'
                         : directions[s.symbol] === 'down'
-                        ? 'price-down'
-                        : ''
-                    }`}
+                        ? 'text-emerald-400'
+                        : 'text-slate-100',
+                    ].join(' ')}
                   >
                     {s.last_price}
                   </td>
-                  <td className="num">{s.bid_price ?? '-'}</td>
-                  <td className="num">{s.ask_price ?? '-'}</td>
-                  <td className="num">{s.volume_24h ?? '-'}</td>
-                  <td className="num">{s.notional_24h ?? '-'}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {s.bid_price ?? '-'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {s.ask_price ?? '-'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {s.volume_24h ?? '-'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {s.notional_24h ?? '-'}
+                  </td>
                   <td
-                    className={`num ${
+                    className={[
+                      'px-2 py-1.5 text-right tabular-nums',
                       changeDirs[s.symbol] === 'up'
-                        ? 'price-up'
+                        ? 'text-rose-400'
                         : changeDirs[s.symbol] === 'down'
-                        ? 'price-down'
-                        : ''
-                    }`}
+                        ? 'text-emerald-400'
+                        : 'text-slate-100',
+                    ].join(' ')}
                   >
                     {s.change_24h ?? '-'}
                   </td>

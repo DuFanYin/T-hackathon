@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
-import { api } from './lib/api';
+import { api, setAdminToken } from './lib/api';
 import type {
   Holding,
   RunningStrategy,
@@ -10,7 +10,6 @@ import type {
 } from './lib/types';
 import { Sidebar, type Tab } from './components/Sidebar';
 import { HeaderBar } from './components/HeaderBar';
-import { SystemStatusPanel } from './components/HealthPanel';
 import { StrategiesPanel } from './components/StrategiesPanel';
 import { SymbolPanel } from './components/SymbolPanel';
 import { LogsPanel } from './components/LogsPanel';
@@ -34,9 +33,17 @@ export default function App() {
   const [pairs, setPairs] = useState<string[]>([])
 
   const [logs, setLogs] = useState<string[]>([])
-  const [logsOn, setLogsOn] = useState<boolean>(true)
+  const [logsOn] = useState<boolean>(true)
   const logBoxRef = useRef<HTMLDivElement>(null as unknown as HTMLDivElement)
   const [system, setSystem] = useState<SystemStatus>({ running: false, mode: null })
+  const [backendOk, setBackendOk] = useState<boolean>(false)
+  const [adminToken, setAdminTokenState] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem('t_admin_token') || null
+    } catch {
+      return null
+    }
+  })
 
   const apiBase = api.baseUrl;
 
@@ -46,11 +53,27 @@ export default function App() {
     return { ok, label };
   }, [health, healthErr]);
 
+  const isAuthed = !!adminToken
+
+  useEffect(() => {
+    setAdminToken(adminToken || null)
+    try {
+      if (adminToken) {
+        window.localStorage.setItem('t_admin_token', adminToken)
+      } else {
+        window.localStorage.removeItem('t_admin_token')
+      }
+    } catch {
+      // ignore
+    }
+  }, [adminToken])
+
   async function refreshAll() {
     setActionErr('')
     try {
       const st = await api.systemStatus()
       setSystem(st)
+      setBackendOk(true)
       if (!st.running) {
         setHealth(null)
         setHealthErr('system not running')
@@ -76,6 +99,7 @@ export default function App() {
     } catch (e: any) {
       setHealth(null)
       setHealthErr(e?.message || String(e))
+      setBackendOk(false)
     }
   }
 
@@ -142,128 +166,137 @@ export default function App() {
   }, [running, selectedName])
 
   return (
-    <div className="app">
+    <div className="grid h-screen w-screen grid-cols-[260px,minmax(0,1fr)] bg-[#050505] text-slate-100">
       <Sidebar
         tab={tab}
         setTab={setTab}
         apiBase={apiBase}
         pills={pills}
+        backendOk={backendOk}
+        engineMode={system.mode}
+        systemRunning={system.running}
+        isAuthed={isAuthed}
+        onLogin={async (token) => {
+          const ok = await api.checkAdmin(token)
+          if (ok) {
+            setAdminTokenState(token)
+          } else {
+            // keep locked
+            // simple feedback for now
+            window.alert('Invalid admin token')
+          }
+        }}
+        onLogout={() => setAdminTokenState(null)}
+        onStartMock={() => {
+          api.systemStart('mock').then(() => refreshAll()).catch(() => {})
+        }}
+        onStartLive={() => {
+          api.systemStart('real').then(() => refreshAll()).catch(() => {})
+        }}
+        onStopSystem={() => {
+          api.systemStop().then(() => refreshAll()).catch(() => {})
+        }}
       />
 
-      <main className="main">
-        <HeaderBar title={tab === 'Symbols' ? 'Symbols' : tab} onRefresh={refreshAll} />
+      <main className="flex h-screen w-full flex-col gap-4 overflow-hidden bg-gradient-to-br from-slate-950 via-slate-950 to-slate-900 px-3 py-4 sm:px-5">
+        <HeaderBar title={tab === 'Symbols' ? 'Symbols' : tab} />
 
-        {tab === 'System' && (
-          <SystemStatusPanel
-            health={health}
-            healthErr={healthErr}
-            system={system}
-            onStartMock={() => {
-              api.systemStart('mock').then(() => refreshAll()).catch(() => {})
-            }}
-            onStartLive={() => {
-              api.systemStart('real').then(() => refreshAll()).catch(() => {})
-            }}
-            onStopSystem={() => {
-              api.systemStop().then(() => refreshAll()).catch(() => {})
-            }}
-          />
-        )}
+        <section className="flex w-full flex-1 flex-col overflow-hidden">
+          {tab === 'Strategies' && (
+            <StrategiesPanel
+              available={available}
+              running={running}
+              activeNames={activeNames}
+              holdings={positions}
+              pairs={pairs}
+              selectedName={selectedName}
+              onSelect={(name) => setSelectedName(name)}
+              isAuthed={isAuthed}
+              startStrategy={startStrategy}
+              setStartStrategy={setStartStrategy}
+              startSymbol={startSymbol}
+              setStartSymbol={setStartSymbol}
+              busy={busy}
+              actionErr={actionErr}
+              onAdd={async () => {
+                setBusy('add')
+                setActionErr('')
+                try {
+                  const res = await api.addStrategy({ strategy: startStrategy, symbol: startSymbol })
+                  setSelectedName(res.name)
+                  await refreshAll()
+                } catch (e: any) {
+                  setActionErr(e?.message || String(e))
+                } finally {
+                  setBusy('')
+                }
+              }}
+              onInit={async (name: string) => {
+                setBusy(name)
+                setActionErr('')
+                try {
+                  await api.initStrategy({ name })
+                  await refreshAll()
+                } catch (e: any) {
+                  setActionErr(e?.message || String(e))
+                } finally {
+                  setBusy('')
+                }
+              }}
+              onStartSelected={async () => {
+                if (!selectedName) return
+                setBusy('start')
+                setActionErr('')
+                try {
+                  await api.startStrategyByName({ name: selectedName })
+                  await refreshAll()
+                } catch (e: any) {
+                  setActionErr(e?.message || String(e))
+                } finally {
+                  setBusy('')
+                }
+              }}
+              onStop={async (name: string) => {
+                setBusy(name)
+                setActionErr('')
+                try {
+                  await api.stopStrategy({ name })
+                  await refreshAll()
+                } catch (e: any) {
+                  setActionErr(e?.message || String(e))
+                } finally {
+                  setBusy('')
+                }
+              }}
+              onDelete={async (name: string) => {
+                setBusy(`${name}-del`)
+                setActionErr('')
+                try {
+                  await api.deleteStrategy({ name })
+                  await refreshAll()
+                } catch (e: any) {
+                  setActionErr(e?.message || String(e))
+                } finally {
+                  setBusy('')
+                }
+              }}
+            />
+          )}
 
-        {tab === 'Strategies' && (
-          <StrategiesPanel
-            available={available}
-            running={running}
-            activeNames={activeNames}
-            holdings={positions}
-            pairs={pairs}
-            selectedName={selectedName}
-            onSelect={(name) => setSelectedName(name)}
-            startStrategy={startStrategy}
-            setStartStrategy={setStartStrategy}
-            startSymbol={startSymbol}
-            setStartSymbol={setStartSymbol}
-            busy={busy}
-            actionErr={actionErr}
-            onAdd={async () => {
-              setBusy('add')
-              setActionErr('')
-              try {
-                const res = await api.addStrategy({ strategy: startStrategy, symbol: startSymbol })
-                setSelectedName(res.name)
-                await refreshAll()
-              } catch (e: any) {
-                setActionErr(e?.message || String(e))
-              } finally {
-                setBusy('')
-              }
-            }}
-            onInit={async (name: string) => {
-              setBusy(name)
-              setActionErr('')
-              try {
-                await api.initStrategy({ name })
-                await refreshAll()
-              } catch (e: any) {
-                setActionErr(e?.message || String(e))
-              } finally {
-                setBusy('')
-              }
-            }}
-            onStartSelected={async () => {
-              if (!selectedName) return
-              setBusy('start')
-              setActionErr('')
-              try {
-                await api.startStrategyByName({ name: selectedName })
-                await refreshAll()
-              } catch (e: any) {
-                setActionErr(e?.message || String(e))
-              } finally {
-                setBusy('')
-              }
-            }}
-            onStop={async (name: string) => {
-              setBusy(name)
-              setActionErr('')
-              try {
-                await api.stopStrategy({ name })
-                await refreshAll()
-              } catch (e: any) {
-                setActionErr(e?.message || String(e))
-              } finally {
-                setBusy('')
-              }
-            }}
-            onDelete={async (name: string) => {
-              setBusy(`${name}-del`)
-              setActionErr('')
-              try {
-                await api.deleteStrategy({ name })
-                await refreshAll()
-              } catch (e: any) {
-                setActionErr(e?.message || String(e))
-              } finally {
-                setBusy('')
-              }
-            }}
-          />
-        )}
+          {tab === 'Symbols' && (
+            <SymbolPanel symbols={allSymbols} />
+          )}
 
-        {tab === 'Symbols' && (
-          <SymbolPanel symbols={allSymbols} />
-        )}
-
-        {tab === 'Logs' && (
+          {tab === 'Logs' && (
           <LogsPanel
             logs={logs}
-            logsOn={logsOn}
-            setLogsOn={setLogsOn}
+            isAuthed={isAuthed}
             onTail={() => api.logsTail(200).then((r) => setLogs(r.lines)).catch(() => {})}
             onClear={() => setLogs([])}
             logBoxRef={logBoxRef}
           />
-        )}
+          )}
+        </section>
       </main>
     </div>
   )
