@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Run backend: kill if running, build env if needed, then start.
-# Usage: ./run_backend.sh [--reset]
-#   --reset  Remove .venv and recreate (fresh install)
+# Usage: ./run_backend.sh [--reset|--upgrade-python]
+#   --reset, -r         Remove .venv and recreate (fresh install)
+#   --upgrade-python    Same as --reset: recreate venv with python3.12
 #
 
 set -e
@@ -11,7 +12,7 @@ cd "$(dirname "$0")"
 RESET_VENV=false
 for arg in "$@"; do
   case "$arg" in
-    --reset|-r) RESET_VENV=true ;;
+    --reset|-r|--upgrade-python) RESET_VENV=true ;;
   esac
 done
 
@@ -47,30 +48,31 @@ else
   echo "[run_backend] WARN: lsof/fuser not found, skipping port kill"
 fi
 
-# 2. Use Python 3.12 (prefer python3.12, fallback to python3)
-PYTHON=""
-if command -v python3.12 &>/dev/null; then
-  PYTHON="python3.12"
-elif python3 -c 'import sys; exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
-  PYTHON="python3"
-fi
-if [ -z "$PYTHON" ]; then
-  echo "[run_backend] ERROR: Python 3.12 required. Install: python3.12 or ensure python3 is 3.12+"
+# 2. Force Python 3.12
+PYTHON="python3.12"
+if ! command -v python3.12 &>/dev/null; then
+  echo "[run_backend] ERROR: python3.12 not found. Install:"
+  echo "  Ubuntu/Debian:    sudo apt install python3.12 python3.12-venv"
+  echo "  Amazon Linux 2:   sudo dnf install python3.12  (or upgrade to AL2023)"
+  echo "  Amazon Linux 2023: sudo dnf install python3.12"
+  echo "  RHEL/CentOS:      sudo dnf install python3.12"
+  echo "  macOS:            brew install python@3.12"
+  echo "  Or use pyenv:     pyenv install 3.12.3 && pyenv local 3.12.3"
   exit 1
 fi
-PYVER=$($PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")' 2>/dev/null)
+PYVER=$(python3.12 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")' 2>/dev/null)
 echo "[run_backend] Python $PYVER"
 
-# 3. Reset or build venv
+# 3. Reset or build venv (must recreate venv to use new Python)
 if [ "$RESET_VENV" = true ]; then
   if [ -d "$VENV" ]; then
-    echo "[run_backend] Resetting venv (removing $VENV)..."
+    echo "[run_backend] Removing $VENV to recreate with python3.12..."
     rm -rf "$VENV"
   fi
 fi
 if [ ! -d "$VENV" ]; then
   echo "[run_backend] Creating venv at $VENV..."
-  $PYTHON -m venv "$VENV"
+  python3.12 -m venv "$VENV"
 fi
 
 # 4. Activate and ensure deps
