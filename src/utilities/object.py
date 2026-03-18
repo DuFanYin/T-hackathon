@@ -15,7 +15,7 @@ from typing import Any, Optional
 # ---------------- SYMBOL ----------------
 
 
-@dataclass(slots=True)
+@dataclass
 class SymbolData:
     """
     Aggregated state for a single traded symbol.
@@ -47,7 +47,7 @@ class SymbolData:
 
 # ---------------- BAR ----------------
 
-@dataclass(slots=True)
+@dataclass
 class BarData:
     """OHLC bar for a symbol (one candle)."""
 
@@ -65,7 +65,7 @@ class BarData:
 # ---------------- ORDER ----------------
 
 
-@dataclass(slots=True)
+@dataclass
 class OrderRequest:
     """
     Request to place a new order.
@@ -83,7 +83,7 @@ class OrderRequest:
     extra: Optional[dict[str, Any]] = None
 
 
-@dataclass(slots=True)
+@dataclass
 class CancelOrderRequest:
     """
     Request to cancel an existing order.
@@ -97,7 +97,7 @@ class CancelOrderRequest:
     extra: Optional[dict[str, Any]] = None
 
 
-@dataclass(slots=True)
+@dataclass
 class OrderData:
     """Order lifecycle information (event payload for `EVENT_ORDER`)."""
 
@@ -134,7 +134,7 @@ class OrderData:
 # ---------------- POSITION (crypto: simple per-symbol) ----------------
 
 
-@dataclass(slots=True)
+@dataclass
 class PositionData:
     """Single-symbol position for crypto; quantity is always >= 0 (long only, no short)."""
 
@@ -149,7 +149,7 @@ class PositionData:
         return self.quantity * self.mid_price if self.mid_price else 0.0
 
 
-@dataclass(slots=True)
+@dataclass
 class StrategyHolding:
     """Per-strategy holdings: positions by symbol + summary (crypto, no combos)."""
 
@@ -164,7 +164,7 @@ class StrategyHolding:
 # ---------------- LOG ----------------
 
 
-@dataclass(slots=True)
+@dataclass
 class LogData:
     """Structured log message carried by `EVENT_LOG`."""
 
@@ -178,7 +178,7 @@ class LogData:
 # ---------------- RISK ALERT ----------------
 
 
-@dataclass(slots=True)
+@dataclass
 class RiskAlertData:
     """Payload for `EVENT_RISK_ALERT`."""
 
@@ -192,7 +192,7 @@ class RiskAlertData:
 # ---------------- TIMER ----------------
 
 
-@dataclass(slots=True)
+@dataclass
 class TimerData:
     """Payload for `EVENT_TIMER` (optional; many handlers can ignore data)."""
 

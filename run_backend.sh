@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 #
 # Run backend: kill if running, build env if needed, then start.
-# Usage: ./run_backend.sh
+# Usage: ./run_backend.sh [--reset]
+#   --reset  Remove .venv and recreate (fresh install)
 #
 
 set -e
 cd "$(dirname "$0")"
+
+RESET_VENV=false
+for arg in "$@"; do
+  case "$arg" in
+    --reset|-r) RESET_VENV=true ;;
+  esac
+done
 
 # Load CONTROL_PORT from .env if present
 if [ -f .env ]; then
@@ -39,17 +47,31 @@ else
   echo "[run_backend] WARN: lsof/fuser not found, skipping port kill"
 fi
 
-# 2. Build venv if not present
+# 2. Check Python version (3.9+ required)
+PYVER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0")
+if [ "$PYVER" = "0" ]; then
+  echo "[run_backend] ERROR: python3 not found"
+  exit 1
+fi
+echo "[run_backend] Python $PYVER"
+
+# 3. Reset or build venv
+if [ "$RESET_VENV" = true ]; then
+  if [ -d "$VENV" ]; then
+    echo "[run_backend] Resetting venv (removing $VENV)..."
+    rm -rf "$VENV"
+  fi
+fi
 if [ ! -d "$VENV" ]; then
   echo "[run_backend] Creating venv at $VENV..."
   python3 -m venv "$VENV"
 fi
 
-# 3. Activate and ensure deps
+# 4. Activate and ensure deps
 echo "[run_backend] Activating venv and installing deps..."
 source "$VENV/bin/activate"
 pip install -q -r requirements.txt
 
-# 4. Run backend
+# 5. Run backend
 echo "[run_backend] Starting api_server.py..."
 exec python api_server.py

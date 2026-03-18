@@ -616,7 +616,7 @@ class GatewayEngine(BaseEngine):
             self.main_engine.put_event(EVENT_BAR, bar_data)
 
 
-@dataclass(slots=True)
+@dataclass
 class _OrderTrack:
     order_id: str
     strategy_name: str
