@@ -13,7 +13,6 @@ from typing import Optional
 from .engine_event import Event, EventEngine
 from .engine_gateway import GatewayEngine
 from .engine_market import MarketEngine
-from .engine_risk import RiskEngine
 from .engine_strategy import StrategyEngine
 from src.control.log_store import LogStore
 from src.control.order_store import OrderStore
@@ -36,7 +35,7 @@ class MainEngine:
         self.order_store: OrderStore = OrderStore()
         self._log_file_handler: RotatingFileHandler | None = None
         self._log_file_lock = threading.Lock()
-        self.write_log(f"[System] init: starting (mode={self.env_mode})")
+        self.write_log(f"init: starting (mode={self.env_mode})", level="INFO", source="System")
 
         self.event_engine: EventEngine = event_engine or EventEngine(main_engine=self)
         if event_engine is not None:
@@ -46,12 +45,11 @@ class MainEngine:
         self.market_engine = MarketEngine(main_engine=self)
         self.gateway_engine = GatewayEngine(main_engine=self, env_mode=self.env_mode)
         self.strategy_engine = StrategyEngine(main_engine=self)
-        self.risk_engine = RiskEngine(main_engine=self)
-        self.write_log("[System] init: engines constructed")
+        self.write_log("init: engines constructed", level="INFO", source="System")
 
         # One-time discovery of tradable pairs from the exchange; cache the AVAILABLE list only.
         try:
-            self.write_log("[System] init: discovering trading pairs via /v3/exchangeInfo")
+            self.write_log("init: discovering trading pairs via /v3/exchangeInfo", level="INFO", source="System")
             info = self.gateway_engine.get_exchange_info()
             pairs: list[str] = []
             if isinstance(info, dict):
@@ -68,20 +66,20 @@ class MainEngine:
                 # Poll all pairs with one bulk /v3/ticker call per tick.
                 self.gateway_engine.trading_pairs = list(pairs)
                 self.market_engine.set_symbols(pairs)
-                self.write_log(f"[System] init: discovered {len(pairs)} trading pairs")
+                self.write_log(f"init: discovered {len(pairs)} trading pairs", level="INFO", source="System")
             else:
-                self.write_log("[System] init: no trading pairs discovered from /v3/exchangeInfo")
+                self.write_log("init: no trading pairs discovered from /v3/exchangeInfo", level="WARN", source="System")
         except Exception as e:
             # Discovery failure should not stop the engine; market data will be limited.
-            self.write_log(f"[System] init: exchangeInfo discovery failed: {e}")
+            self.write_log(f"init: exchangeInfo discovery failed: {e}", level="ERROR", source="System")
 
         self.event_engine.start()
-        self.write_log("[System] init: event engine started")
+        self.write_log("init: event engine started", level="INFO", source="System")
 
         # Warm cached account snapshots immediately (do not wait for timer throttle).
         # This keeps `/account/*` useful right after startup.
         try:
-            self.write_log("[System] init: warming account cache (/v3/balance, /v3/pending_count)")
+            self.write_log("init: warming account cache (/v3/balance, /v3/pending_count)", level="INFO", source="System")
             self.gateway_engine._refresh_account_cache(force=True)
         except Exception:
             pass
@@ -149,6 +147,10 @@ class MainEngine:
         """Gateway: GET /v3/pending_count (SIGNED)."""
         return self.gateway_engine.pending_count()
 
+    def get_pending_orders_by_symbol(self, strategy_name: str) -> dict[str, list[str]]:
+        """Gateway: pending order ids grouped by symbol for a strategy."""
+        return self.gateway_engine.get_pending_orders_by_symbol(strategy_name)
+
     def place_order(
         self,
         symbol: str,
@@ -195,10 +197,10 @@ class MainEngine:
         """Enqueue an event on the event engine."""
         self.event_engine.put(Event(event_type, data))
 
-    def write_log(self, message: str) -> None:
+    def write_log(self, message: str, level: str = "INFO", source: str = "System") -> None:
         """Append a line to the system log stream (used by engines and control-plane UI)."""
         try:
-            msg = self.log_store.append(message)
+            msg = self.log_store.append(message, level=level, source=source)
 
             # Persist logs on disk (rotating) under data/logs/.
             # Defaults can be overridden via env:

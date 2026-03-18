@@ -102,19 +102,19 @@ class GatewayEngine(BaseEngine):
             url = f"{self.base_url}{path}"
             resp = requests.get(url, params=params, headers=headers, timeout=3.0)
             if resp.status_code != 200:
-                self.log(f"[Gateway] GET {url} failed status={resp.status_code} body={resp.text}")
+                self.log(f"GET {url} failed status={resp.status_code} body={resp.text}", level="ERROR", source="Gateway")
                 return None
             try:
                 body = resp.json()
             except Exception as e:
-                self.log(f"[Gateway] GET {url} json error: {e} body={resp.text}")
+                self.log(f"GET {url} json error: {e} body={resp.text}", level="ERROR", source="Gateway")
                 return None
             if not isinstance(body, dict):
-                self.log(f"[Gateway] GET {url} unexpected JSON type: {type(body)}")
+                self.log(f"GET {url} unexpected JSON type: {type(body)}", level="WARN", source="Gateway")
                 return None
             return body
         except Exception as e:
-            self.log(f"[Gateway] GET {path} exception: {e}")
+            self.log(f"GET {path} exception: {e}", level="ERROR", source="Gateway")
             return None
 
     def _request_post(self, path: str, data: Dict[str, Any], signed: bool) -> Dict[str, Any] | None:
@@ -123,19 +123,19 @@ class GatewayEngine(BaseEngine):
             url = f"{self.base_url}{path}"
             resp = requests.post(url, data=data, headers=headers, timeout=3.0)
             if resp.status_code != 200:
-                self.log(f"[Gateway] POST {url} failed status={resp.status_code} body={resp.text}")
+                self.log(f"POST {url} failed status={resp.status_code} body={resp.text}", level="ERROR", source="Gateway")
                 return None
             try:
                 body = resp.json()
             except Exception as e:
-                self.log(f"[Gateway] POST {url} json error: {e} body={resp.text}")
+                self.log(f"POST {url} json error: {e} body={resp.text}", level="ERROR", source="Gateway")
                 return None
             if not isinstance(body, dict):
-                self.log(f"[Gateway] POST {url} unexpected JSON type: {type(body)}")
+                self.log(f"POST {url} unexpected JSON type: {type(body)}", level="WARN", source="Gateway")
                 return None
             return body
         except Exception as e:
-            self.log(f"[Gateway] POST {path} exception: {e}")
+            self.log(f"POST {path} exception: {e}", level="ERROR", source="Gateway")
             return None
 
     @staticmethod
@@ -164,17 +164,17 @@ class GatewayEngine(BaseEngine):
 
     def get_exchange_info(self) -> Dict[str, Any] | None:
         """GET /v3/exchangeInfo (no auth). Adds explicit error logging on failure."""
-        self.log("[Gateway] system init: GET /v3/exchangeInfo")
+        self.log("system init: GET /v3/exchangeInfo", level="INFO", source="Gateway")
         body = self._request_get("/v3/exchangeInfo", params={}, signed=False)
         if body is None:
-            self.log("[Gateway] /v3/exchangeInfo returned None (network/parse failure)")
+            self.log("/v3/exchangeInfo returned None (network/parse failure)", level="ERROR")
             return None
         if not isinstance(body, dict):
-            self.log(f"[Gateway] /v3/exchangeInfo unexpected body type: {type(body)}")
+            self.log(f"/v3/exchangeInfo unexpected body type: {type(body)}", level="WARN", source="Gateway")
             return None
         if body.get("Success") is False:
             # Log full body so we can see error code/message from Roostoo.
-            self.log(f"[Gateway] /v3/exchangeInfo error: {body}")
+            self.log(f"/v3/exchangeInfo error: {body}", level="WARN", source="Gateway")
         return body
 
     def get_ticker(self, symbol: str | None = None) -> Dict[str, Any] | None:
@@ -276,7 +276,7 @@ class GatewayEngine(BaseEngine):
             return
 
         try:
-            self.log("[Gateway] query: /v3/balance (cache refresh)" + (" [force]" if force else ""))
+            self.log("query: /v3/balance (cache refresh)" + (" [force]" if force else ""), level="DEBUG", source="Gateway")
             bal = self.get_balance()
             if isinstance(bal, dict):
                 # Roostoo can return SpotWallet instead of Wallet.
@@ -289,7 +289,7 @@ class GatewayEngine(BaseEngine):
             pass
 
         try:
-            self.log("[Gateway] query: /v3/pending_count (cache refresh)" + (" [force]" if force else ""))
+            self.log("query: /v3/pending_count (cache refresh)" + (" [force]" if force else ""), level="DEBUG", source="Gateway")
             pc = self.pending_count()
             if isinstance(pc, dict):
                 self._cached_pending_count = pc
@@ -358,22 +358,38 @@ class GatewayEngine(BaseEngine):
             return {strat: ids} if ids else {}
         return {s: sorted(ids) for s, ids in self._strategy_pending.items() if ids}
 
+    def get_pending_orders_by_symbol(self, strategy_name: str) -> dict[str, list[str]]:
+        """
+        Return pending order ids grouped by symbol for a strategy.
+        Result: {symbol: [order_id, ...], ...} — strategies can use this instead of tracking locally.
+        """
+        strat = strategy_name or "default"
+        by_symbol: dict[str, list[str]] = {}
+        for oid, track in self._order_tracks.items():
+            if track.strategy_name != strat:
+                continue
+            sym = track.symbol
+            if sym not in by_symbol:
+                by_symbol[sym] = []
+            by_symbol[sym].append(oid)
+        for sym in by_symbol:
+            by_symbol[sym] = sorted(by_symbol[sym])
+        return by_symbol
+
     def _poll_orders_and_emit(self) -> None:
         """
         Poll /v3/query_order for tracked orders and synchronously update engines.
 
-        To keep ordering intuitive for strategies, we directly call:
-        - strategy_engine.on_order(OrderData)
-        - risk_engine.on_order(OrderData)
-
-        instead of enqueueing EVENT_ORDER and waiting for the next tick.
+        To keep ordering intuitive for strategies, we directly call
+        strategy_engine.on_order(OrderData) instead of enqueueing EVENT_ORDER
+        and waiting for the next tick.
         """
         me = self.main_engine
         if not self._order_tracks or me is None:
             return
 
         # Query calls only (place/cancel are NOT counted as "query").
-        self.log(f"[Gateway] query: /v3/query_order batch size={len(self._order_tracks)}")
+        self.log(f"query: /v3/query_order batch size={len(self._order_tracks)}", level="DEBUG", source="Gateway")
 
         finished: list[str] = []
         for oid, track in list(self._order_tracks.items()):
@@ -423,8 +439,6 @@ class GatewayEngine(BaseEngine):
                 # Synchronously update engines so strategies see up-to-date positions
                 if hasattr(me, "strategy_engine"):
                     me.strategy_engine.on_order(data)
-                if hasattr(me, "risk_engine"):
-                    me.risk_engine.on_order(data)
 
             if status in ("FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
                 finished.append(oid)

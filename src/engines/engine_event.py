@@ -134,18 +134,20 @@ class EventEngine(BaseEngine):
         me = self.main_engine
         assert me is not None
         me.strategy_engine.on_order(event)
-        me.risk_engine.on_order(event)
 
     def _handle_log(self, event: Event) -> None:
-        msg = getattr(event.data, "msg", None) or str(event.data)
+        data = event.data
+        msg = getattr(data, "msg", None) or str(data)
+        level = getattr(data, "level", "INFO") if data is not None else "INFO"
+        source = getattr(data, "source", None) if data is not None else None
         # Fan out to control-plane log store if present.
         try:
             me = self.main_engine
             if me is not None and hasattr(me, "log_store") and me.log_store is not None:
-                me.log_store.append(f"[LOG] {msg}")
+                me.log_store.append(msg, level=level, source=source)
         except Exception:
             pass
-        print(f"[LOG] {msg}")
+        print(f"[{level}] {msg}")
 
     def _handle_risk_alert(self, event: Event) -> None:
         msg = getattr(event.data, "msg", None) or str(event.data)
@@ -162,7 +164,6 @@ class EventEngine(BaseEngine):
         me.gateway_engine.on_timer()
         me.strategy_engine.process_timer_event()
         me.strategy_engine.on_timer()
-        me.risk_engine.on_timer()
 
     # ---------------- intent routing ----------------
 

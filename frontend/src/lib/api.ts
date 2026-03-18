@@ -30,7 +30,7 @@ export function setAdminToken(token: string | null) {
 }
 
 const API_BASE =
-  import.meta.env?.VITE_API_BASE?.toString?.() || 'https://marlyn-auntlike-verla.ngrok-free.dev';
+  import.meta.env?.VITE_API_BASE?.toString?.() || 'http://localhost:8000';
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method || 'GET').toUpperCase();

@@ -98,20 +98,22 @@ class Strat2Momentum(StrategyTemplate):
         return f"{coin}USDT"
 
     def _log_reconciliation(self) -> None:
-        """Log Strat2 internal positions vs engine holdings for reconciliation (self-contained)."""
+        """Log Strat2 internal positions vs engine holdings and gateway pending orders."""
         strat_pos = {self._format_order_symbol(c): p["qty"] for c, p in self._positions.items()}
         eng_pos = {}
         if hasattr(self._main, "strategy_engine") and self._main.strategy_engine:
             holding = self._main.strategy_engine.get_holding(self.strategy_name)
             eng_pos = {s: p.quantity for s, p in holding.positions.items() if p.quantity != 0}
+        pending = self.get_pending_orders()  # engine cached pending by symbol
         diff = set(strat_pos.keys()) ^ set(eng_pos.keys())
         if diff:
             self.write_log(
-                f"RECONCILE: Strat2={list(strat_pos)} | Engine={list(eng_pos)} | "
-                f"mismatch={list(diff)} — check fill/order status"
+                f"RECONCILE: Strat2={list(strat_pos)} | Engine={list(eng_pos)} | pending={list(pending)} | "
+                f"mismatch={list(diff)} — check fill/order status",
+                level="WARN",
             )
-        elif strat_pos:
-            self.write_log(f"RECONCILE: OK | Strat2={strat_pos} Engine={eng_pos}")
+        elif strat_pos or pending:
+            self.write_log(f"RECONCILE: OK | Strat2={strat_pos} Engine={eng_pos} pending={pending}", level="DEBUG")
 
     # ──────────────────────────────────────────
     # Lifecycle
@@ -123,7 +125,8 @@ class Strat2Momentum(StrategyTemplate):
             f"top_n={self.top_n} rebal={self.rebalance_every} "
             f"trail={self.trailing_stop_pct}% min_hold={self.min_hold_candles} "
             f"regime_ma={self.regime_ma_candles} alloc=${self.capital_allocation:,.0f} "
-            f"order_symbol={self.order_symbol_format}"
+            f"order_symbol={self.order_symbol_format}",
+            level="INFO",
         )
 
     def history_requirements(self) -> list[dict[str, object]]:
@@ -139,7 +142,7 @@ class Strat2Momentum(StrategyTemplate):
         return reqs
 
     def on_stop_logic(self) -> None:
-        self.write_log("Strat2Momentum stopping — closing all positions")
+        self.write_log("Strat2Momentum stopping — closing all positions", level="INFO")
         self._close_all_positions("strategy_stop")
 
     # ──────────────────────────────────────────
@@ -156,7 +159,8 @@ class Strat2Momentum(StrategyTemplate):
                 if me:
                     btc_bars = me.get_bar_count("BTCUSDT", self.interval.binance)
                 self.write_log(
-                    f"Warming up... {btc_bars} BTC bars (need {self.regime_ma_candles})"
+                    f"Warming up... {btc_bars} BTC bars (need {self.regime_ma_candles})",
+                    level="DEBUG",
                 )
             return
 
@@ -268,7 +272,8 @@ class Strat2Momentum(StrategyTemplate):
             if dd >= self.trailing_stop_pct:
                 self.write_log(
                     f"TRAILING STOP {coin}: peak={pos['peak_price']:.4f} "
-                    f"now={price:.4f} dd={dd:.1f}%"
+                    f"now={price:.4f} dd={dd:.1f}%",
+                    level="WARN",
                 )
                 to_close.append(coin)
 
@@ -285,7 +290,8 @@ class Strat2Momentum(StrategyTemplate):
 
         # If bearish regime, close positions that have met min hold
         if not regime:
-            self.write_log("REGIME: Bearish (BTC below MA) — exiting positions")
+            n = len(self._positions)
+            self.write_log(f"REGIME: Bearish (BTC below MA) — exiting {n} position(s)", level="WARN")
             for coin in list(self._positions.keys()):
                 ticks_held = self._tick_count - self._positions[coin]["entry_tick"]
                 if ticks_held >= self.min_hold_candles:
@@ -296,13 +302,13 @@ class Strat2Momentum(StrategyTemplate):
         rankings = self._get_momentum_rankings()
 
         if rankings:
-            top_coins = [r["coin"] for r in rankings[:min(5, len(rankings))]]
             self.write_log(
                 f"REBALANCE: regime=BULL | top movers: "
-                + ", ".join(f"{r['coin']}({r['momentum_pct']:+.1f}%)" for r in rankings[:5])
+                + ", ".join(f"{r['coin']}({r['momentum_pct']:+.1f}%)" for r in rankings[:5]),
+                level="INFO",
             )
         else:
-            self.write_log("REBALANCE: No assets meet momentum threshold")
+            self.write_log("REBALANCE: No assets meet momentum threshold", level="WARN")
             return
 
         target_coins = [r["coin"] for r in rankings[:self.top_n]]
@@ -312,7 +318,7 @@ class Strat2Momentum(StrategyTemplate):
             if coin not in target_coins:
                 ticks_held = self._tick_count - self._positions[coin]["entry_tick"]
                 if ticks_held >= self.min_hold_candles:
-                    self.write_log(f"ROTATION EXIT: {coin} no longer in top {self.top_n}")
+                    self.write_log(f"ROTATION EXIT: {coin} no longer in top {self.top_n}", level="INFO")
                     self._close_position(coin, "rotation")
 
         # Enter new targets
@@ -349,6 +355,10 @@ class Strat2Momentum(StrategyTemplate):
         qty = round(qty, 5)
 
         if qty <= 0 or alloc < 10:
+            self.write_log(
+                f"BUY {coin} skipped: qty={qty:.5f} alloc=${alloc:,.0f} (min $10)",
+                level="WARN",
+            )
             return
 
         # Use LIMIT order for lower commission
@@ -357,7 +367,8 @@ class Strat2Momentum(StrategyTemplate):
 
         self.write_log(
             f"BUY {coin}: qty={qty:.5f} limit={limit_price:.4f} "
-            f"alloc=${alloc:,.0f} momentum={momentum:+.2f}%"
+            f"alloc=${alloc:,.0f} momentum={momentum:+.2f}%",
+            level="INFO",
         )
 
         roostoo_symbol = self._format_order_symbol(coin)
@@ -395,7 +406,8 @@ class Strat2Momentum(StrategyTemplate):
 
         self.write_log(
             f"SELL {coin}: qty={pos['qty']:.5f} reason={reason} "
-            f"entry={pos['entry_price']:.4f} now={current_price:.4f}"
+            f"entry={pos['entry_price']:.4f} now={current_price:.4f}",
+            level="INFO",
         )
 
         self.send_order(

@@ -1,4 +1,80 @@
 import type { FC, MutableRefObject } from 'react';
+import { useMemo, useState } from 'react';
+
+export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
+const LOG_LEVELS: LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+
+type ParsedLogLine = {
+  timestamp: string | null;
+  level: LogLevel;
+  source: string;
+  msg: string;
+};
+
+/** Parse line: "MM-DD HH:MM:SS | LEVEL | source | message" or legacy formats */
+function parseLogLine(line: string): ParsedLogLine {
+  const raw = line.trim();
+  if (!raw) {
+    return { timestamp: null, level: 'INFO', source: 'System', msg: '' };
+  }
+  // New format: "MM-DD HH:MM:SS | LEVEL | source | message"
+  const parts = raw.split(/\s*\|\s*/);
+  if (parts.length >= 4) {
+    const [ts, lvl, source, ...rest] = parts;
+    const level = (lvl?.toUpperCase() || 'INFO') as LogLevel;
+    const validLevel = LOG_LEVELS.includes(level) ? level : 'INFO';
+    return {
+      timestamp: ts || null,
+      level: validLevel,
+      source: (source || 'System').trim(),
+      msg: rest.join(' | ').trim(),
+    };
+  }
+  // Legacy: "MM-DD HH:MM:SS | LEVEL | message"
+  const m1 = raw.match(/^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*(DEBUG|INFO|WARN|ERROR)\s*\|\s*(.*)$/s);
+  if (m1) {
+    return { timestamp: m1[1], level: m1[2] as LogLevel, source: 'System', msg: m1[3] };
+  }
+  // Legacy: "MM-DD HH:MM:SS | message"
+  const m2 = raw.match(/^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*(.*)$/s);
+  if (m2) {
+    return { timestamp: m2[1], level: 'INFO', source: 'System', msg: m2[2] };
+  }
+  return { timestamp: null, level: 'INFO', source: 'System', msg: raw };
+}
+
+const LEVEL_COLORS: Record<LogLevel, string> = {
+  DEBUG: 'text-slate-400',
+  INFO: 'text-slate-100',
+  WARN: 'text-amber-300',
+  ERROR: 'text-rose-400',
+};
+
+function levelPassesFilter(level: LogLevel, filter: LogLevel | 'ALL'): boolean {
+  if (filter === 'ALL') return true;
+  return level === filter;
+}
+
+function sourcePassesFilter(source: string, filter: string): boolean {
+  if (filter === 'ALL') return true;
+  return source === filter;
+}
+
+/** Extract unique source/strategy names from logs, sorted (System first, then alphabetically) */
+function uniqueSources(logs: string[]): string[] {
+  const seen = new Set<string>();
+  for (const line of logs) {
+    const { source } = parseLogLine(line);
+    if (source) seen.add(source);
+  }
+  const list = Array.from(seen).sort((a, b) => {
+    if (a === 'System') return -1;
+    if (b === 'System') return 1;
+    return a.localeCompare(b);
+  });
+  return list;
+}
 
 interface LogsPanelProps {
   logs: string[];
@@ -15,30 +91,36 @@ export const LogsPanel: FC<LogsPanelProps> = ({
   onClear,
   logBoxRef,
 }) => {
+  const [levelFilter, setLevelFilter] = useState<LogLevel | 'ALL'>('ALL');
+  const [sourceFilter, setSourceFilter] = useState<string>('ALL');
+
+  const sources = useMemo(() => uniqueSources(logs), [logs]);
+
+  const filteredLogs = logs.filter((line) => {
+    const { level, source } = parseLogLine(line);
+    return levelPassesFilter(level, levelFilter) && sourcePassesFilter(source, sourceFilter);
+  });
+
   const renderLine = (line: string, idx: number) => {
-    const raw = line.trim();
-    if (!raw) {
+    const { timestamp, level, source, msg } = parseLogLine(line);
+    if (!msg && !timestamp) {
       return <div key={idx}>&nbsp;</div>;
     }
 
-    // Backend-generated timestamp prefix: "MM-DD HH:MM:SS | rest..."
-    let timestamp: string | null = null;
-    let msg = raw;
-
-    const m = raw.match(/^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*(.*)$/);
-    if (m) {
-      timestamp = m[1];
-      msg = m[2];
-    }
+    const colorClass = LEVEL_COLORS[level];
 
     return (
       <div key={idx} className="flex items-start gap-3 text-xs">
         {timestamp && (
-          <span className="shrink-0 font-mono text-emerald-300">
-            {timestamp}
-          </span>
+          <span className="shrink-0 font-mono text-emerald-300">{timestamp}</span>
         )}
-        <span className="flex-1 text-slate-100">{msg}</span>
+        <span className={`shrink-0 w-12 font-mono text-[10px] uppercase ${colorClass}`}>
+          {level}
+        </span>
+        <span className="shrink-0 max-w-[140px] truncate font-mono text-[10px] text-cyan-300/90" title={source}>
+          {source}
+        </span>
+        <span className={`flex-1 min-w-0 ${colorClass}`}>{msg}</span>
       </div>
     );
   };
@@ -60,15 +142,40 @@ export const LogsPanel: FC<LogsPanelProps> = ({
         >
           Clear
         </button>
+        <span className="ml-2 text-[11px] text-white/50">Level:</span>
+        <select
+          value={levelFilter}
+          onChange={(e) => setLevelFilter(e.target.value as LogLevel | 'ALL')}
+          className="rounded-lg border border-white/20 bg-black/40 px-2 py-1.5 text-xs text-slate-100 focus:border-white/40 focus:outline-none"
+        >
+          <option value="ALL">All</option>
+          {LOG_LEVELS.map((lvl) => (
+            <option key={lvl} value={lvl}>
+              {lvl}
+            </option>
+          ))}
+        </select>
+        <span className="ml-2 text-[11px] text-white/50">Strategy:</span>
+        <select
+          value={sourceFilter}
+          onChange={(e) => setSourceFilter(e.target.value)}
+          className="rounded-lg border border-white/20 bg-black/40 px-2 py-1.5 text-xs text-slate-100 focus:border-white/40 focus:outline-none min-w-[120px]"
+        >
+          <option value="ALL">All</option>
+          {sources.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div
         ref={logBoxRef}
         className="flex-1 overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 font-mono leading-relaxed text-xs"
       >
-        {logs.map(renderLine)}
+        {filteredLogs.map(renderLine)}
       </div>
     </div>
   );
 };
-

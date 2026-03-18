@@ -30,19 +30,21 @@ class BaseEngine:
         """The main engine this engine is attached to."""
         return self._main_engine
 
-    def log(self, message: str) -> None:
+    def log(self, message: str, level: str = "INFO", source: str | None = None) -> None:
         """
         Write a system log line (fanout to UI + SSE).
         Safe no-op if engine isn't attached yet.
+        Uses engine_name as source when source is not provided.
         """
         me = self._main_engine
         if me is None:
             return
+        src = source or self.engine_name or "System"
         try:
             if hasattr(me, "write_log") and callable(getattr(me, "write_log")):
-                me.write_log(message)
+                me.write_log(message, level=level, source=src)
             elif hasattr(me, "log_store") and me.log_store is not None:
-                me.log_store.append(message)
+                me.log_store.append(message, level=level, source=src)
         except Exception:
             # Logging must never break engine logic.
             return

@@ -94,6 +94,15 @@ class MarketEngine(BaseEngine):
         """Return cached SymbolData for the symbol (last_price from latest bar close)."""
         return self._symbols.get(symbol)
 
+    def get_cached_symbols(self) -> List[str]:
+        """Return sorted list of symbols the market engine has bar/symbol data for."""
+        seen: set[str] = set()
+        for key in self._bars:
+            parts = key.rsplit("_", 1)
+            if len(parts) == 2:
+                seen.add(parts[0])
+        return sorted(seen)
+
     def update_symbol_from_ticker(
         self,
         symbol: str,

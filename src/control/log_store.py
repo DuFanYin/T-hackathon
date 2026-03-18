@@ -18,10 +18,15 @@ class LogStore:
         self._tail: Deque[str] = deque(maxlen=maxlen)
         self._subscribers: Set[asyncio.Queue[str]] = set()
 
-    def append(self, line: str) -> str:
+    def append(self, line: str, level: str = "INFO", source: str | None = None) -> str:
         # Backend is the single source of timestamp formatting.
+        # Format: "MM-DD HH:MM:SS | LEVEL | source | message" for frontend parsing.
         ts = datetime.now().strftime("%m-%d %H:%M:%S")
-        msg = f"{ts} | {str(line)}"
+        lvl = str(level).upper() if level else "INFO"
+        if lvl not in ("DEBUG", "INFO", "WARN", "ERROR"):
+            lvl = "INFO"
+        src = (source or "System").strip() or "System"
+        msg = f"{ts} | {lvl} | {src} | {str(line)}"
         self._tail.append(msg)
         # Non-blocking fanout; drop if subscriber queue is full/hung.
         for q in list(self._subscribers):

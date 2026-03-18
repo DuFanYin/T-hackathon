@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from src.utilities.events import EVENT_LOG
 from src.utilities.intents import INTENT_PLACE_ORDER
 from src.utilities.interval import Interval
-from src.utilities.object import OrderRequest
+from src.utilities.object import LogData, OrderRequest
 
 if TYPE_CHECKING:
     from src.engines.engine_main import MainEngine
@@ -150,9 +150,8 @@ class StrategyTemplate:
 
     # ---------- helpers ----------
 
-    def write_log(self, msg: str) -> None:
-        prefixed = f"[{self.strategy_name}] {msg}"
-        self._main.put_event(EVENT_LOG, prefixed)
+    def write_log(self, msg: str, level: str = "INFO") -> None:
+        self._main.put_event(EVENT_LOG, LogData(msg=msg, level=level, source=self.strategy_name))
 
     def send_order(
         self,
@@ -177,11 +176,20 @@ class StrategyTemplate:
             return None
         return self._main.market_engine.get_symbol(symbol) if hasattr(self._main, "market_engine") else None
 
+    def get_pending_orders(self) -> dict[str, list[str]]:
+        """
+        Return engine's cached pending order ids for this strategy, grouped by symbol.
+        Result: {symbol: [order_id, ...], ...}. Use instead of tracking pending orders locally.
+        """
+        if not hasattr(self._main, "get_pending_orders_by_symbol"):
+            return {}
+        return self._main.get_pending_orders_by_symbol(self.strategy_name)
+
     def set_error(self, msg: str = "") -> None:
         self._error = True
         self._error_msg = msg
         self._started = False
-        self.write_log("ERROR: " + msg)
+        self.write_log(msg, level="ERROR")
 
     def clear_all_positions(self) -> None:
         """Close all positions for this strategy (long only: market sell). Raises if any quantity < 0."""

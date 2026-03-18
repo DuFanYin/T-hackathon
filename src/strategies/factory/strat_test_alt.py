@@ -30,6 +30,7 @@ class StratTestAlt(StrategyTemplate):
         self._order_attempts: int = 0
         self._cycle_limit: int = 3
         self._side_next: str = "BUY"
+        self.write_log(f"StratTestAlt symbol={self.symbol} qty={self.quantity} cycles={self._cycle_limit}", level="INFO")
 
     @property
     def order_attempts(self) -> int:
@@ -41,12 +42,12 @@ class StratTestAlt(StrategyTemplate):
         super().on_order(event)
         holding = self._main.strategy_engine.get_holding(self.strategy_name)
         pos_summary = {s: p.quantity for s, p in holding.positions.items() if p.quantity != 0}
-        self.write_log(f"positions={pos_summary}")
+        self.write_log(f"positions={pos_summary}", level="INFO")
 
     def on_timer_logic(self) -> None:
         sym = self.get_symbol(self.symbol)
         last = getattr(sym, "last_price", None) if sym else None
-        self.write_log(f"tick price {self.symbol}={last}")
+        self.write_log(f"tick price {self.symbol}={last}", level="DEBUG")
 
         # Alternate market orders
         side = self._side_next
@@ -65,16 +66,16 @@ class StratTestAlt(StrategyTemplate):
                     if detail is None and isinstance(resp.get("OrderMatched"), list) and resp["OrderMatched"]:
                         detail = resp["OrderMatched"][0]
                 status = str((detail or {}).get("Status", "")).upper() if isinstance(detail, dict) else ""
-                self.write_log(f"order status order_id={order_id} status={status}")
+                self.write_log(f"order status order_id={order_id} status={status}", level="INFO")
                 if status == "PENDING":
                     self._main.cancel_order(order_id=str(order_id), symbol=self.symbol)
-                    self.write_log(f"cancel sent order_id={order_id}")
+                    self.write_log(f"cancel sent order_id={order_id}", level="INFO")
 
         except Exception as e:
-            self.write_log(f"post-order checks failed: {e}")
+            self.write_log(f"post-order checks failed: {e}", level="ERROR")
 
         # 3 cycles total => 6 orders
         if self._order_attempts >= self._cycle_limit * 2:
-            self.write_log("completed 3 cycles; stopping strategy")
+            self.write_log("completed 3 cycles; stopping strategy", level="INFO")
             self._main.stop_strategy(self.strategy_name)
 
