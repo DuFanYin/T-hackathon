@@ -13,6 +13,7 @@ from typing import Optional
 from .engine_event import Event, EventEngine
 from .engine_gateway import GatewayEngine
 from .engine_market import MarketEngine
+from .engine_risk import RiskEngine
 from .engine_strategy import StrategyEngine
 from src.control.log_store import LogStore
 from src.control.order_store import OrderStore
@@ -45,6 +46,7 @@ class MainEngine:
         self.market_engine = MarketEngine(main_engine=self)
         self.gateway_engine = GatewayEngine(main_engine=self, env_mode=self.env_mode)
         self.strategy_engine = StrategyEngine(main_engine=self)
+        self.risk_engine = RiskEngine(main_engine=self)
         self.write_log("init: engines constructed", level="INFO", source="System")
 
         # One-time discovery of tradable pairs from the exchange; cache the AVAILABLE list only.
@@ -99,7 +101,7 @@ class MainEngine:
         self.strategy_engine.start_strategy(strategy_name)
 
     def stop_strategy(self, strategy_name: str) -> None:
-        """Stop the strategy (independent stop control)."""
+        """Stop the strategy (independent stop control). Strategy must be flat."""
         self.strategy_engine.stop_strategy(strategy_name)
 
     def delete_strategy(self, strategy_name: str) -> None:

@@ -134,6 +134,7 @@ class EventEngine(BaseEngine):
         me = self.main_engine
         assert me is not None
         me.strategy_engine.on_order(event)
+        me.risk_engine.on_order(event)
 
     def _handle_log(self, event: Event) -> None:
         data = event.data
@@ -164,6 +165,7 @@ class EventEngine(BaseEngine):
         me.gateway_engine.on_timer()
         me.strategy_engine.process_timer_event()
         me.strategy_engine.on_timer()
+        me.risk_engine.on_timer()
 
     # ---------------- intent routing ----------------
 

@@ -85,7 +85,7 @@ class StrategyEngine(BaseEngine):
         """
         Stop the strategy (on_stop); it will no longer run on_timer_logic.
 
-        Enforcement: strategy must be FLAT before stop (no open positions).
+        Strategy must be FLAT before stop (no open positions).
         """
         s = self.get_strategy(strategy_name)
         if s is None:

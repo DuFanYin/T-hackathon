@@ -66,6 +66,16 @@ class GatewayEngine(BaseEngine):
             self._api_key = os.getenv("General_Portfolio_Testing_API_KEY", "")
             self._secret = os.getenv("General_Portfolio_Testing_API_SECRET", "")
 
+        # Log if signed endpoints may fail (401) due to missing credentials
+        if not self._api_key or not self._secret:
+            key_src = "Competition_API_KEY/SECRET" if use_competition_keys else "General_Portfolio_Testing_API_KEY/SECRET"
+            self.log(
+                f"WARN: Gateway API keys empty or missing | env={key_src} | "
+                f"signed endpoints (/v3/balance, /v3/place_order, etc.) will fail with 401",
+                level="WARN",
+                source="Gateway",
+            )
+
         # order_id -> tracking info for polling query_order and emitting EVENT_ORDER
         self._order_tracks: dict[str, _OrderTrack] = {}
         # strategy_name -> set of currently pending order_ids (for quick lookup/inspection)
@@ -96,25 +106,75 @@ class GatewayEngine(BaseEngine):
         """13-digit millisecond timestamp."""
         return int(time.time() * 1000)
 
+    def _http_status_hint(self, status_code: int, signed: bool) -> str:
+        """Return a short hint for common HTTP status codes."""
+        hints = {
+            400: "Bad request — check params/body format",
+            401: "Unauthorized — signature error or invalid API key/secret; verify env vars",
+            403: "Forbidden — API key lacks permission",
+            404: "Not found — endpoint or resource missing",
+            429: "Rate limited — throttle requests",
+            500: "Server error — Roostoo API issue, retry later",
+            502: "Bad gateway — upstream unavailable",
+            503: "Service unavailable — API overloaded",
+        }
+        hint = hints.get(status_code, "")
+        auth_note = " (signed)" if signed else " (public)"
+        return f"{hint}{auth_note}" if hint else auth_note
+
     def _request_get(self, path: str, params: Dict[str, Any], signed: bool) -> Dict[str, Any] | None:
         try:
             headers = self._headers(params) if signed else None
             url = f"{self.base_url}{path}"
             resp = requests.get(url, params=params, headers=headers, timeout=3.0)
             if resp.status_code != 200:
-                self.log(f"GET {url} failed status={resp.status_code} body={resp.text}", level="ERROR", source="Gateway")
+                hint = self._http_status_hint(resp.status_code, signed)
+                self.log(
+                    f"ERROR: GET {path} failed | status={resp.status_code} | {hint} | "
+                    f"url={url} | body={resp.text[:500]}",
+                    level="ERROR",
+                    source="Gateway",
+                )
                 return None
             try:
                 body = resp.json()
             except Exception as e:
-                self.log(f"GET {url} json error: {e} body={resp.text}", level="ERROR", source="Gateway")
+                self.log(
+                    f"ERROR: GET {path} JSON parse failed | exception={type(e).__name__}: {e} | "
+                    f"body_len={len(resp.text)} body_preview={resp.text[:200]!r}",
+                    level="ERROR",
+                    source="Gateway",
+                )
                 return None
             if not isinstance(body, dict):
-                self.log(f"GET {url} unexpected JSON type: {type(body)}", level="WARN", source="Gateway")
+                self.log(
+                    f"WARN: GET {path} unexpected response type | expected=dict got={type(body).__name__} | "
+                    f"body_preview={str(body)[:200]!r}",
+                    level="WARN",
+                    source="Gateway",
+                )
                 return None
             return body
+        except requests.exceptions.Timeout as e:
+            self.log(
+                f"ERROR: GET {path} timeout | url={url} | {e}",
+                level="ERROR",
+                source="Gateway",
+            )
+            return None
+        except requests.exceptions.ConnectionError as e:
+            self.log(
+                f"ERROR: GET {path} connection failed | url={url} | {e}",
+                level="ERROR",
+                source="Gateway",
+            )
+            return None
         except Exception as e:
-            self.log(f"GET {path} exception: {e}", level="ERROR", source="Gateway")
+            self.log(
+                f"ERROR: GET {path} exception | {type(e).__name__}: {e}",
+                level="ERROR",
+                source="Gateway",
+            )
             return None
 
     def _request_post(self, path: str, data: Dict[str, Any], signed: bool) -> Dict[str, Any] | None:
@@ -123,19 +183,53 @@ class GatewayEngine(BaseEngine):
             url = f"{self.base_url}{path}"
             resp = requests.post(url, data=data, headers=headers, timeout=3.0)
             if resp.status_code != 200:
-                self.log(f"POST {url} failed status={resp.status_code} body={resp.text}", level="ERROR", source="Gateway")
+                hint = self._http_status_hint(resp.status_code, signed)
+                self.log(
+                    f"ERROR: POST {path} failed | status={resp.status_code} | {hint} | "
+                    f"url={url} | body={resp.text[:500]}",
+                    level="ERROR",
+                    source="Gateway",
+                )
                 return None
             try:
                 body = resp.json()
             except Exception as e:
-                self.log(f"POST {url} json error: {e} body={resp.text}", level="ERROR", source="Gateway")
+                self.log(
+                    f"ERROR: POST {path} JSON parse failed | exception={type(e).__name__}: {e} | "
+                    f"body_len={len(resp.text)} body_preview={resp.text[:200]!r}",
+                    level="ERROR",
+                    source="Gateway",
+                )
                 return None
             if not isinstance(body, dict):
-                self.log(f"POST {url} unexpected JSON type: {type(body)}", level="WARN", source="Gateway")
+                self.log(
+                    f"WARN: POST {path} unexpected response type | expected=dict got={type(body).__name__} | "
+                    f"body_preview={str(body)[:200]!r}",
+                    level="WARN",
+                    source="Gateway",
+                )
                 return None
             return body
+        except requests.exceptions.Timeout as e:
+            self.log(
+                f"ERROR: POST {path} timeout | url={url} | {e}",
+                level="ERROR",
+                source="Gateway",
+            )
+            return None
+        except requests.exceptions.ConnectionError as e:
+            self.log(
+                f"ERROR: POST {path} connection failed | url={url} | {e}",
+                level="ERROR",
+                source="Gateway",
+            )
+            return None
         except Exception as e:
-            self.log(f"POST {path} exception: {e}", level="ERROR", source="Gateway")
+            self.log(
+                f"ERROR: POST {path} exception | {type(e).__name__}: {e}",
+                level="ERROR",
+                source="Gateway",
+            )
             return None
 
     @staticmethod
@@ -164,17 +258,33 @@ class GatewayEngine(BaseEngine):
 
     def get_exchange_info(self) -> Dict[str, Any] | None:
         """GET /v3/exchangeInfo (no auth). Adds explicit error logging on failure."""
-        self.log("system init: GET /v3/exchangeInfo", level="INFO", source="Gateway")
+        self.log("system init: GET /v3/exchangeInfo (discovering trading pairs)", level="INFO", source="Gateway")
         body = self._request_get("/v3/exchangeInfo", params={}, signed=False)
         if body is None:
-            self.log("/v3/exchangeInfo returned None (network/parse failure)", level="ERROR")
+            self.log(
+                "ERROR: /v3/exchangeInfo returned None | possible causes: network failure, timeout, "
+                "invalid JSON, or non-200 status — check logs above for details",
+                level="ERROR",
+                source="Gateway",
+            )
             return None
         if not isinstance(body, dict):
-            self.log(f"/v3/exchangeInfo unexpected body type: {type(body)}", level="WARN", source="Gateway")
+            self.log(
+                f"WARN: /v3/exchangeInfo unexpected body type | expected=dict got={type(body).__name__} | "
+                f"cannot discover trading pairs",
+                level="WARN",
+                source="Gateway",
+            )
             return None
         if body.get("Success") is False:
-            # Log full body so we can see error code/message from Roostoo.
-            self.log(f"/v3/exchangeInfo error: {body}", level="WARN", source="Gateway")
+            err_code = body.get("ErrorCode", body.get("Code", ""))
+            err_msg = body.get("ErrorMessage", body.get("Message", str(body)))
+            self.log(
+                f"WARN: /v3/exchangeInfo API error | Success=False | ErrorCode={err_code} | "
+                f"ErrorMessage={err_msg} | full_body={body}",
+                level="WARN",
+                source="Gateway",
+            )
         return body
 
     def get_ticker(self, symbol: str | None = None) -> Dict[str, Any] | None:
@@ -220,7 +330,17 @@ class GatewayEngine(BaseEngine):
         if payload["type"] == "LIMIT":
             payload["price"] = float(price if price is not None else 0.0)
 
-        return self._request_post("/v3/place_order", data=payload, signed=True)
+        resp = self._request_post("/v3/place_order", data=payload, signed=True)
+        if isinstance(resp, dict) and resp.get("Success") is False:
+            err_code = resp.get("ErrorCode", resp.get("Code", ""))
+            err_msg = resp.get("ErrorMessage", resp.get("Message", str(resp)[:300]))
+            self.log(
+                f"ERROR: place_order failed | pair={pair} side={side} qty={quantity} type={payload['type']} | "
+                f"Success=False ErrorCode={err_code} ErrorMessage={err_msg}",
+                level="ERROR",
+                source="Gateway",
+            )
+        return resp
 
     def cancel_order(self, order_id: str | None = None, symbol: str | None = None) -> Dict[str, Any] | None:
         """POST /v3/cancel_order (SIGNED). Returns raw API response dict or None."""
@@ -229,7 +349,17 @@ class GatewayEngine(BaseEngine):
             payload["order_id"] = order_id
         if symbol:
             payload["pair"] = self._to_roostoo_pair(symbol)
-        return self._request_post("/v3/cancel_order", data=payload, signed=True)
+        resp = self._request_post("/v3/cancel_order", data=payload, signed=True)
+        if isinstance(resp, dict) and resp.get("Success") is False:
+            err_code = resp.get("ErrorCode", resp.get("Code", ""))
+            err_msg = resp.get("ErrorMessage", resp.get("Message", str(resp)[:300]))
+            self.log(
+                f"ERROR: cancel_order failed | order_id={order_id} symbol={symbol} | "
+                f"Success=False ErrorCode={err_code} ErrorMessage={err_msg}",
+                level="ERROR",
+                source="Gateway",
+            )
+        return resp
 
     def query_order(
         self,
@@ -285,8 +415,13 @@ class GatewayEngine(BaseEngine):
                     bal["Wallet"] = bal.get("SpotWallet")
                 self._cached_balance = bal
                 self._cached_balance_ts = now
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(
+                f"ERROR: /v3/balance cache refresh failed | exception={type(e).__name__}: {e} | "
+                f"account UI will show stale or empty balance",
+                level="ERROR",
+                source="Gateway",
+            )
 
         try:
             self.log("query: /v3/pending_count (cache refresh)" + (" [force]" if force else ""), level="DEBUG", source="Gateway")
@@ -294,8 +429,13 @@ class GatewayEngine(BaseEngine):
             if isinstance(pc, dict):
                 self._cached_pending_count = pc
                 self._cached_pending_count_ts = now
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(
+                f"ERROR: /v3/pending_count cache refresh failed | exception={type(e).__name__}: {e} | "
+                f"account UI will show stale or empty pending count",
+                level="ERROR",
+                source="Gateway",
+            )
 
     def get_cached_balance(self) -> dict[str, Any] | None:
         return self._cached_balance
@@ -380,9 +520,11 @@ class GatewayEngine(BaseEngine):
         """
         Poll /v3/query_order for tracked orders and synchronously update engines.
 
-        To keep ordering intuitive for strategies, we directly call
-        strategy_engine.on_order(OrderData) instead of enqueueing EVENT_ORDER
-        and waiting for the next tick.
+        To keep ordering intuitive for strategies, we directly call:
+        - strategy_engine.on_order(OrderData)
+        - risk_engine.on_order(OrderData)
+
+        instead of enqueueing EVENT_ORDER and waiting for the next tick.
         """
         me = self.main_engine
         if not self._order_tracks or me is None:
@@ -395,8 +537,22 @@ class GatewayEngine(BaseEngine):
         for oid, track in list(self._order_tracks.items()):
             body = self.query_order(order_id=oid)
             if not isinstance(body, dict):
+                self.log(
+                    f"WARN: order poll order_id={oid} symbol={track.symbol} returned non-dict | "
+                    f"strategy={track.strategy_name} | check _request_post logs for API error",
+                    level="WARN",
+                    source="Gateway",
+                )
                 continue
             if body.get("Success") is False:
+                err_code = body.get("ErrorCode", body.get("Code", ""))
+                err_msg = body.get("ErrorMessage", body.get("Message", str(body)[:200]))
+                self.log(
+                    f"WARN: order poll order_id={oid} symbol={track.symbol} Success=False | "
+                    f"ErrorCode={err_code} ErrorMessage={err_msg} | strategy={track.strategy_name}",
+                    level="WARN",
+                    source="Gateway",
+                )
                 continue
             detail = body.get("OrderDetail")
             if not isinstance(detail, dict):
@@ -439,6 +595,8 @@ class GatewayEngine(BaseEngine):
                 # Synchronously update engines so strategies see up-to-date positions
                 if hasattr(me, "strategy_engine"):
                     me.strategy_engine.on_order(data)
+                if hasattr(me, "risk_engine"):
+                    me.risk_engine.on_order(data)
 
             if status in ("FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
                 finished.append(oid)
