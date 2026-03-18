@@ -30,12 +30,12 @@ export function setAdminToken(token: string | null) {
 }
 
 const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE?.toString?.() || 'http://localhost:8000';
+  import.meta.env?.VITE_API_BASE?.toString?.() || 'https://marlyn-auntlike-verla.ngrok-free.dev';
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method || 'GET').toUpperCase();
   const hasBody = init?.body !== undefined && init?.body !== null;
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { 'ngrok-skip-browser-warning': 'true' };
   // Only set Content-Type when we actually send a body.
   // Setting it on GET triggers CORS preflight (OPTIONS) unnecessarily.
   if (hasBody && method !== 'GET') headers['Content-Type'] = 'application/json';

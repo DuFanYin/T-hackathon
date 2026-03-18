@@ -27,7 +27,7 @@ type CachedOrdersShape = {
   cached_pending_count_ts?: number | null;
 };
 
-function isRecord(v: unknown): v is Record<string, any> {
+function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 

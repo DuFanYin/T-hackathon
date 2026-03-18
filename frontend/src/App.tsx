@@ -5,6 +5,7 @@ import type {
   Holding,
   RunningStrategy,
   LogsStreamEvent,
+  OrderRow,
   SystemStatus,
 } from './lib/types';
 import { Sidebar, type Tab } from './components/Sidebar';
@@ -15,6 +16,9 @@ import { OrdersPanel } from './components/OrdersPanel';
 import { LogsPanel } from './components/LogsPanel';
 
 export default function App() {
+  const getErrorMessage = (error: unknown): string =>
+    error instanceof Error ? error.message : String(error)
+
   const [tab, setTab] = useState<Tab>('Strategies')
 
   const [available, setAvailable] = useState<string[]>([])
@@ -32,7 +36,7 @@ export default function App() {
   const [accountOrders, setAccountOrders] = useState<unknown>(null)
   const [accountErr, setAccountErr] = useState<string>('')
 
-  const [ordersRows, setOrdersRows] = useState<any[]>([])
+  const [ordersRows, setOrdersRows] = useState<OrderRow[]>([])
   const [ordersErr, setOrdersErr] = useState<string>('')
   const [ordersStrategy, setOrdersStrategy] = useState<string>('')
   const [ordersSymbol, setOrdersSymbol] = useState<string>('')
@@ -107,11 +111,11 @@ export default function App() {
           setAccountPendingCount(pc.pending_count)
           setAccountOrders(o.orders)
           setAccountErr('')
-        } catch (e: any) {
-          setAccountErr(e?.message || String(e))
+        } catch (e: unknown) {
+          setAccountErr(getErrorMessage(e))
         }
       }
-    } catch (e: any) {
+    } catch {
       setBackendOk(false)
     }
   }
@@ -127,7 +131,6 @@ export default function App() {
     if (tab === 'Logs') {
       api.logsTail(200).then((r) => setLogs(r.lines)).catch(() => setLogs([]))
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
   async function refreshOrdersOnce() {
@@ -139,10 +142,10 @@ export default function App() {
     setOrdersBusy(true)
     try {
       const r = await api.orders(ordersStrategy.trim() || undefined, ordersSymbol.trim() || undefined, ordersLimit)
-      setOrdersRows(r.rows || [])
+      setOrdersRows((r.rows || []) as OrderRow[])
       setOrdersErr('')
-    } catch (e: any) {
-      setOrdersErr(e?.message || String(e))
+    } catch (e: unknown) {
+      setOrdersErr(getErrorMessage(e))
       setOrdersRows([])
     } finally {
       setOrdersBusy(false)
@@ -231,9 +234,9 @@ export default function App() {
           api.systemStart('real').then(() => refreshAll()).catch(() => {})
         }}
         onStopSystem={async () => {
-          const anyOpen = Object.values(positions || {}).some((h: any) => {
-            const ps = Object.values((h as any)?.positions || {})
-            return ps.some((p: any) => (p?.quantity || 0) !== 0)
+          const anyOpen = Object.values(positions || {}).some((holding) => {
+            const positionRows = Object.values(holding?.positions || {})
+            return positionRows.some((position) => (position?.quantity || 0) !== 0)
           })
           const anyStarted = running.some((s) => s.started)
 
@@ -261,8 +264,8 @@ export default function App() {
           try {
             await api.systemStop()
             await refreshAll()
-          } catch (e: any) {
-            window.alert(e?.message || String(e))
+          } catch (e: unknown) {
+            window.alert(getErrorMessage(e))
           }
         }}
       />
@@ -292,8 +295,8 @@ export default function App() {
                   const res = await api.addStrategy({ strategy: startStrategy })
                   setSelectedName(res.name)
                   await refreshAll()
-                } catch (e: any) {
-                  setActionErr(e?.message || String(e))
+                } catch (e: unknown) {
+                  setActionErr(getErrorMessage(e))
                 } finally {
                   setBusy('')
                 }
@@ -310,8 +313,8 @@ export default function App() {
                 try {
                   await api.startStrategyByName({ name: selectedName })
                   await refreshAll()
-                } catch (e: any) {
-                  setActionErr(e?.message || String(e))
+                } catch (e: unknown) {
+                  setActionErr(getErrorMessage(e))
                 } finally {
                   setStartingNames((prev) => {
                     const next = new Set(prev)
@@ -327,8 +330,8 @@ export default function App() {
                 try {
                   await api.stopStrategy({ name })
                   await refreshAll()
-                } catch (e: any) {
-                  setActionErr(e?.message || String(e))
+                } catch (e: unknown) {
+                  setActionErr(getErrorMessage(e))
                 } finally {
                   setBusy('')
                 }
@@ -339,8 +342,8 @@ export default function App() {
                 try {
                   await api.closePositions({ name })
                   await refreshAll()
-                } catch (e: any) {
-                  setActionErr(e?.message || String(e))
+                } catch (e: unknown) {
+                  setActionErr(getErrorMessage(e))
                 } finally {
                   setBusy('')
                 }
@@ -354,8 +357,8 @@ export default function App() {
                     setActionErr(`close_all: errors for ${Object.keys(res.errors).length} strategies`)
                   }
                   await refreshAll()
-                } catch (e: any) {
-                  setActionErr(e?.message || String(e))
+                } catch (e: unknown) {
+                  setActionErr(getErrorMessage(e))
                 } finally {
                   setBusy('')
                 }
@@ -366,8 +369,8 @@ export default function App() {
                 try {
                   await api.deleteStrategy({ name })
                   await refreshAll()
-                } catch (e: any) {
-                  setActionErr(e?.message || String(e))
+                } catch (e: unknown) {
+                  setActionErr(getErrorMessage(e))
                 } finally {
                   setBusy('')
                 }
@@ -397,7 +400,7 @@ export default function App() {
               limit={ordersLimit}
               setLimit={setOrdersLimit}
               err={ordersErr}
-              rows={ordersRows as any}
+              rows={ordersRows}
               onRefresh={() => { refreshOrdersOnce().catch(() => {}) }}
             />
           )}
