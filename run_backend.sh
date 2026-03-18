@@ -47,12 +47,18 @@ else
   echo "[run_backend] WARN: lsof/fuser not found, skipping port kill"
 fi
 
-# 2. Check Python version (3.9+ required)
-PYVER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0")
-if [ "$PYVER" = "0" ]; then
-  echo "[run_backend] ERROR: python3 not found"
+# 2. Use Python 3.12 (prefer python3.12, fallback to python3)
+PYTHON=""
+if command -v python3.12 &>/dev/null; then
+  PYTHON="python3.12"
+elif python3 -c 'import sys; exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+  PYTHON="python3"
+fi
+if [ -z "$PYTHON" ]; then
+  echo "[run_backend] ERROR: Python 3.12 required. Install: python3.12 or ensure python3 is 3.12+"
   exit 1
 fi
+PYVER=$($PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")' 2>/dev/null)
 echo "[run_backend] Python $PYVER"
 
 # 3. Reset or build venv
@@ -64,7 +70,7 @@ if [ "$RESET_VENV" = true ]; then
 fi
 if [ ! -d "$VENV" ]; then
   echo "[run_backend] Creating venv at $VENV..."
-  python3 -m venv "$VENV"
+  $PYTHON -m venv "$VENV"
 fi
 
 # 4. Activate and ensure deps
