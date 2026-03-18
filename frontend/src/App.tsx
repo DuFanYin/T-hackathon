@@ -4,7 +4,6 @@ import { api, setAdminToken } from './lib/api';
 import type {
   Holding,
   RunningStrategy,
-  LogsStreamEvent,
   OrderRow,
   SystemStatus,
 } from './lib/types';
@@ -44,7 +43,6 @@ export default function App() {
   const [ordersBusy, setOrdersBusy] = useState<boolean>(false)
 
   const [logs, setLogs] = useState<string[]>([])
-  const [logsOn] = useState<boolean>(true)
   const logBoxRef = useRef<HTMLDivElement>(null as unknown as HTMLDivElement)
   const [system, setSystem] = useState<SystemStatus>({ running: false, mode: null })
   const [backendOk, setBackendOk] = useState<boolean>(false)
@@ -127,11 +125,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => {
-    if (tab === 'Logs') {
-      api.logsTail(200).then((r) => setLogs(r.lines)).catch(() => setLogs([]))
-    }
-  }, [tab])
+  async function refreshLogs() {
+    api.logsTail(200).then((r) => setLogs(r.lines)).catch(() => setLogs([]))
+  }
 
   async function refreshOrdersOnce() {
     if (!isAuthed) {
@@ -166,28 +162,6 @@ export default function App() {
     return () => window.clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, isAuthed, ordersStrategy, ordersSymbol, ordersLimit])
-
-  useEffect(() => {
-    if (!logsOn) return
-    const es = new EventSource(api.logsStreamUrl())
-    es.onmessage = (evt) => {
-      try {
-        const parsed = JSON.parse(evt.data) as LogsStreamEvent
-        if (parsed?.line) {
-          setLogs((prev) => {
-            const next = prev.length >= 2000 ? prev.slice(-1800) : prev
-            return [...next, parsed.line]
-          })
-        }
-      } catch {
-        // ignore
-      }
-    }
-    es.onerror = () => {
-      // Keep EventSource alive; browser will reconnect automatically.
-    }
-    return () => es.close()
-  }, [logsOn])
 
   useEffect(() => {
     if (tab !== 'Logs') return
@@ -409,7 +383,7 @@ export default function App() {
           <LogsPanel
             logs={logs}
             isAuthed={isAuthed}
-            onTail={() => api.logsTail(200).then((r) => setLogs(r.lines)).catch(() => {})}
+            onTail={refreshLogs}
             onClear={() => setLogs([])}
             logBoxRef={logBoxRef}
           />

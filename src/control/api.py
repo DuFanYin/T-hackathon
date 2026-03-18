@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 
 from src.engines.engine_strategy import AVAILABLE_STRATEGIES
 from src.control.engine_manager import EngineManager, Mode
@@ -324,35 +324,17 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
 
     @app.get("/logs/tail")
     def logs_tail(n: int = 200):
-        # Use the manager directly so "not running" returns 200 with empty lines.
-        main_engine = engine_manager.get()
-        if main_engine is None:
+        """Read last n lines from log file. Works even when engine is stopped."""
+        log_file = (os.getenv("LOG_FILE") or "data/logs/system.log").strip()
+        try:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            lines = [ln.rstrip("\n\r") for ln in lines[-n:] if ln.strip()]
+            return {"lines": lines}
+        except FileNotFoundError:
             return {"lines": []}
-        return {"lines": main_engine.log_store.tail(n)}
-
-    @app.get("/logs/stream")
-    async def logs_stream():
-        """
-        Stream logs via Server-Sent Events.
-
-        If the trading engine is not running yet, return an empty SSE stream (200)
-        instead of failing, so the frontend can stay connected while waiting.
-        """
-        # Use the manager directly so we can tolerate "not running" without raising.
-        main_engine = engine_manager.get()
-
-        if main_engine is None:
-            async def empty_gen():
-                if False:
-                    yield ""  # pragma: no cover
-            return StreamingResponse(empty_gen(), media_type="text/event-stream")
-
-        async def event_gen():
-            async for line in main_engine.log_store.subscribe():
-                payload = json.dumps({"line": line}, ensure_ascii=False)
-                yield f"data: {payload}\n\n"
-
-        return StreamingResponse(event_gen(), media_type="text/event-stream")
+        except Exception:
+            return {"lines": []}
 
     return app
 

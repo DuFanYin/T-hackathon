@@ -51,8 +51,6 @@ export type ClosePositionsResponse = { ok: boolean; name: string };
 export type CloseAllPositionsResponse = { ok: boolean; closed: string[]; errors: Record<string, string> };
 
 export type LogsTailResponse = { lines: string[] };
-export type LogsStreamEvent = { line: string };
-
 export type SystemStatus = { running: boolean; mode: 'mock' | 'real' | null };
 
 export type AccountBalanceResponse = { balance: unknown };

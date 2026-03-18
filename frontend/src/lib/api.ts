@@ -110,7 +110,6 @@ export const api = {
       body: JSON.stringify({}),
     }),
   logsTail: (n = 200) => http<LogsTailResponse>(`/logs/tail?n=${n}`),
-  logsStreamUrl: () => `${API_BASE}/logs/stream`,
   accountBalance: () => http<AccountBalanceResponse>('/account/balance'),
   accountPendingCount: () => http<AccountPendingCountResponse>('/account/pending_count'),
   accountOrders: (pendingOnly = true, limit = 200) =>
