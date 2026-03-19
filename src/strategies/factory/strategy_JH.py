@@ -1,8 +1,11 @@
 """
-strategy_JH.
+strategy_JH: Support Bounce Scalper — 15m Multi-Pair Deployment
 
-Note: This file defines the strategy class `StrategyJH` whose default `strategy_name`
-matches the filename (`strategy_JH`), so it can be registered/started by name consistently.
+Aligned to the provided reference bot:
+- Uses 15m bars directly from MarketEngine (no internal resampling).
+- Runs signal logic on 15m closes.
+- Monitors stop/target exits on every timer tick.
+- Trades a fixed 8-pair universe by default.
 """
 
 from __future__ import annotations
@@ -17,28 +20,38 @@ if TYPE_CHECKING:
     from src.engines.engine_main import MainEngine
 
 
-def _round_digits(value: float, digits: int) -> float:
-    if digits < 0:
+# Internal symbol universe (GatewayEngine expects BTCUSDT-style symbols).
+PAIRS_CONFIG: dict[str, dict[str, Any]] = {
+    "APTUSDT": {"mintick": 0.01},
+    "CRVUSDT": {"mintick": 0.0001},
+    "EIGENUSDT": {"mintick": 0.001},
+    "TAOUSDT": {"mintick": 0.01},
+    "UNIUSDT": {"mintick": 0.001},
+    "TRUMPUSDT": {"mintick": 0.01},
+    "BONKUSDT": {"mintick": 1e-8},
+    "SHIBUSDT": {"mintick": 1e-8},
+}
+
+
+def _round_price(value: float, mintick: float) -> float:
+    if mintick <= 0:
         return value
-    factor = 10.0**digits
-    return round(value * factor) / factor
+    return round(value / mintick) * mintick
 
 
-def _state_default() -> dict[str, Any]:
-    return {
-        "sup_price": None,
-        "hit_count": 0,
-        "hit1_low": None,
-        "limit_bar_idx": 0,  # bar index when limit order was placed (for timeout)
-        "active_stop": None,
-        "active_target": None,
-    }
+def _round_qty(value: float, decimals: int = 6) -> float:
+    if decimals < 0:
+        return value
+    factor = 10.0**decimals
+    return int(value * factor) / factor
 
 
 class StrategyJH(StrategyTemplate):
     """
-    Port of pine/strategy.pine: support bounce H1/H2, strict bearish, R:R exit.
-    Monitors all trading pairs by default. Bars and indicators from market_engine.
+    Multi-pair 15m support-bounce strategy.
+
+    - Signal computed on internally resampled 15m bars.
+    - Stop/target monitored on every 5m tick.
     """
 
     def __init__(
@@ -48,151 +61,233 @@ class StrategyJH(StrategyTemplate):
         setting: dict[str, Any] | None = None,
     ) -> None:
         s = dict(setting or {})
-        # Solely rely on market engine cached symbols (no resolution from config or main_engine)
-        market = getattr(main_engine, "market_engine", None) if main_engine else None
-        symbols = market.get_cached_symbols() if market and hasattr(market, "get_cached_symbols") else []
+        s.setdefault("timer_trigger", 1)
+        s.setdefault("interval", "15m")
+
+        pairs_override = s.get("pairs")
+        if isinstance(pairs_override, list) and pairs_override:
+            symbols = [str(x).strip().upper() for x in pairs_override if str(x).strip()]
+        else:
+            symbols = list(PAIRS_CONFIG.keys())
         s["symbols"] = symbols
+
         super().__init__(main_engine, strategy_name, s)
-        if not self.symbols:
-            self.write_log(
-                "Symbol selection: no cached symbols in market engine",
-                level="ERROR",
-            )
 
-        self.pivot_len = int(s.get("pivot_len", 3))
-        self.rr = float(s.get("rr", 2.0))
-        self.use_limit = bool(s.get("use_limit", True))
-        self.fill_bars = int(s.get("fill_bars", 2))
-        self.atr_len = int(s.get("atr_len", 14))
-        self.mintick = float(s.get("mintick", 0.01))
-        self.quantity = float(s.get("quantity", 1.0))
+        self.pivot_len: int = int(s.get("pivot_len", 5))
+        self.rr: float = float(s.get("rr", 2.0))
+        self.atr_len: int = int(s.get("atr_len", 14))
+        self.fill_bars: int = int(s.get("fill_bars", 1))
+        self.capital: float = float(s.get("capital", 150_000.0))
+        self.risk_pct: float = float(s.get("risk_pct", 0.01))
 
-        # Per-symbol state
+        self._mintick: dict[str, float] = {sym: float(PAIRS_CONFIG.get(sym, {}).get("mintick", 0.01)) for sym in self.symbols}
         self._state: dict[str, dict[str, Any]] = {}
+        self._alloc_per_pair: float = self.capital / max(1, len(self.symbols))
 
-    def _get_state(self, symbol: str) -> dict[str, Any]:
-        if symbol not in self._state:
-            self._state[symbol] = _state_default()
-        return self._state[symbol]
+    def history_requirements(self) -> list[dict[str, object]]:
+        ival = self.interval.binance
+        # Need enough 15m bars for: pivot (2*pivot_len+1), ATR (atr_len+1), and prev3 pattern (4).
+        need = max(4, 2 * int(self.pivot_len) + 1, int(self.atr_len) + 1)
+        return [{"symbol": sym, "interval": ival, "bars": int(need)} for sym in self.symbols]
 
     def on_init_logic(self) -> None:
+        for sym in self.symbols:
+            self._state[sym] = {
+                "sup_price": None,
+                "hit_count": 0,
+                "hit1_low": None,
+                "limit_bar_idx": 0,
+                "active_stop": None,
+                "active_target": None,
+                "entry_price": 0.0,
+            }
         self.write_log(
-            f"strategy_JH symbols={len(self.symbols)} pivot_len={self.pivot_len} rr={self.rr} use_limit={self.use_limit}",
+            f"Init: {len(self.symbols)} pairs, ${self._alloc_per_pair:,.0f}/pair, "
+            f"interval={self.interval.binance} pivot={self.pivot_len} rr={self.rr} atr={self.atr_len} fill={self.fill_bars}",
             level="INFO",
         )
+
+    def on_stop_logic(self) -> None:
+        self.write_log("Stopping — clearing all positions", level="INFO")
+        self.clear_all_positions()
 
     def on_timer_logic(self) -> None:
         market = getattr(self._main, "market_engine", None)
         if not market:
-            self.write_log("strategy_JH no market_engine", level="WARN")
             return
+        ival = self.interval.binance
+        for sym in self.symbols:
+            st = self._state.get(sym)
+            if st is None:
+                continue
+            self._check_exit(sym, st)
+            self._check_limit_timeout(sym, st, ival)
+            self._process_signal(sym, st, ival)
 
-        ival = getattr(self.interval, "binance", "5m") if hasattr(self, "interval") else "5m"
+    # ---------------- exits (5m) ----------------
 
-        for symbol in self.symbols:
-            self._tick_symbol(market, symbol, ival)
-
-    def _tick_symbol(self, market: Any, symbol: str, interval: str) -> None:
-        last_bars = market.get_last_bars(symbol, 4, interval)
-        if len(last_bars) < 4:
-            bar_count = market.get_bar_count(symbol, interval)
-            if bar_count > 0 and bar_count % 100 == 1:
-                self.write_log(f"strategy_JH {symbol} waiting for bars: have {len(last_bars)}/4", level="DEBUG")
+    def _check_exit(self, sym: str, st: dict[str, Any]) -> None:
+        if st.get("active_stop") is None or st.get("active_target") is None:
             return
-
-        st = self._get_state(symbol)
-        pending_map = self.get_pending_orders()
-        pending_ids = pending_map.get(symbol, [])
 
         holding = self._main.strategy_engine.get_holding(self.strategy_name)
-        pos = holding.positions.get(symbol)
-        position_size = pos.quantity if pos else 0.0
-        flat = position_size == 0.0
+        pos = holding.positions.get(sym)
+        qty = float(pos.quantity) if pos else 0.0
 
-        if not flat and st["active_stop"] is not None and st["active_target"] is not None:
-            sym_data = self.get_symbol(symbol)
-            last = getattr(sym_data, "last_price", None) if sym_data else None
-            if last is not None:
-                if last <= st["active_stop"]:
-                    self.send_order(symbol, "SELL", abs(position_size), last, "MARKET")
-                    self.write_log(f"strategy_JH {symbol} exit stop hit {last} <= {st['active_stop']}", level="WARN")
-                    st["active_stop"] = None
-                    st["active_target"] = None
-                elif last >= st["active_target"]:
-                    self.send_order(symbol, "SELL", abs(position_size), last, "MARKET")
-                    self.write_log(f"strategy_JH {symbol} exit target hit {last} >= {st['active_target']}", level="INFO")
-                    st["active_stop"] = None
-                    st["active_target"] = None
+        if qty <= 0:
+            # Flat: clear stop/target (position closed or never filled).
+            st["active_stop"] = None
+            st["active_target"] = None
+            return
 
-        bar_count = market.get_bar_count(symbol, interval)
-        if self.use_limit and flat and pending_ids and bar_count - st["limit_bar_idx"] >= self.fill_bars + 1:
+        sym_data = self.get_symbol(sym)
+        last = float(getattr(sym_data, "last_price", 0.0) or 0.0) if sym_data else 0.0
+        if last <= 0:
+            return
+
+        if last <= float(st["active_stop"]):
+            self.close_position(sym, qty, order_type="MARKET")
+            self.write_log(f"EXIT STOP {sym}: {last:.6f} <= {float(st['active_stop']):.6f}", level="WARN")
+            st["active_stop"] = None
+            st["active_target"] = None
+            return
+
+        if last >= float(st["active_target"]):
+            self.close_position(sym, qty, order_type="MARKET")
+            self.write_log(f"EXIT TARGET {sym}: {last:.6f} >= {float(st['active_target']):.6f}", level="INFO")
+            st["active_stop"] = None
+            st["active_target"] = None
+
+    # ---------------- limit timeout (15m) ----------------
+
+    def _check_limit_timeout(self, sym: str, st: dict[str, Any], interval: str) -> None:
+        # Timeout is enforced against engine pending orders (per symbol).
+        pending_map = self.get_pending_orders()
+        pending_ids = pending_map.get(sym, [])
+        if not pending_ids:
+            return
+        holding = self._main.strategy_engine.get_holding(self.strategy_name)
+        pos = holding.positions.get(sym)
+        if pos and float(pos.quantity or 0.0) > 0:
+            return
+        bar_count = int(getattr(self._main.market_engine, "get_bar_count")(sym, interval))
+        limit_bar_idx = int(st.get("limit_bar_idx") or 0)
+        if bar_count - limit_bar_idx >= self.fill_bars + 1:
             oid = pending_ids[0]
-            self._main.handle_intent(INTENT_CANCEL_ORDER, CancelOrderRequest(order_id=oid, symbol=symbol))
-            self.write_log(f"strategy_JH {symbol} limit timeout, cancel {oid}", level="WARN")
+            self._main.handle_intent(INTENT_CANCEL_ORDER, CancelOrderRequest(order_id=oid, symbol=sym))
+            self.write_log(f"TIMEOUT {sym}: cancel {oid} after {bar_count - limit_bar_idx} bars", level="WARN")
 
-        last_bar = last_bars[-1]
-        prev_bar = last_bars[-2]
-        o = last_bar.open
-        h = last_bar.high
-        l = last_bar.low
-        c = last_bar.close
-        prev_open = prev_bar.open
-        rng = h - l
-        close_top_third = rng > 0 and c >= (l + rng * (2.0 / 3.0))
-        close_above_support = st["sup_price"] is not None and c > st["sup_price"]
-        close_not_above_prev_open = c <= prev_open
-        entry_price = (h + l) / 2.0
-        stop_price = l - self.mintick
-        risk = entry_price - stop_price
-        atr = market.get_atr(symbol, self.atr_len, interval)
-        risk_too_big = atr > 0 and risk >= atr
+    # ---------------- signal (15m) ----------------
 
-        pl = market.get_pivot_low(symbol, self.pivot_len, self.pivot_len, interval)
+    def _process_signal(self, sym: str, st: dict[str, Any], interval: str) -> None:
+        market = getattr(self._main, "market_engine", None)
+        if market is None:
+            return
+        need = max(4, 2 * self.pivot_len + 1, self.atr_len + 1)
+        bars = market.get_last_bars(sym, need, interval)
+        if len(bars) < need:
+            return
+        cur = bars[-1]
+        prev = bars[-2]
+
+        holding = self._main.strategy_engine.get_holding(self.strategy_name)
+        pos = holding.positions.get(sym)
+        position_qty = float(pos.quantity) if pos else 0.0
+        flat = position_qty == 0.0
+
+        pl = market.get_pivot_low(sym, self.pivot_len, self.pivot_len, interval)
         if pl is not None:
-            st["sup_price"] = pl
+            st["sup_price"] = float(pl)
             st["hit_count"] = 0
             st["hit1_low"] = None
-            self.write_log(f"strategy_JH {symbol} pivot low={pl:.2f} support updated", level="DEBUG")
 
-        hit_support = st["sup_price"] is not None and l <= st["sup_price"]
-        if hit_support:
-            st["hit_count"] += 1
-            if st["hit_count"] == 1:
-                st["hit1_low"] = l
+        if st.get("sup_price") is None:
+            return
 
-        ok_bear = market.prev3_bearish_strict(symbol, interval)
-        ok_t3 = close_top_third
-        ok_cs = close_above_support
-        ok_po = close_not_above_prev_open
-        ok_atr = not risk_too_big
-        higher_low_fail = st["hit_count"] == 2 and st["hit1_low"] is not None and l > st["hit1_low"]
+        sup_price = float(st["sup_price"])
+        hit_support = cur.low <= sup_price
+        if not (hit_support and flat):
+            return
+
+        st["hit_count"] = int(st.get("hit_count") or 0) + 1
+        if int(st["hit_count"]) == 1:
+            st["hit1_low"] = cur.low
+
+        ok_bear = market.prev3_bearish_strict(sym, interval)
+
+        rng = cur.high - cur.low
+        ok_t3 = rng > 0 and cur.close >= cur.low + rng * (2.0 / 3.0)
+        ok_cs = cur.close > sup_price
+        ok_po = cur.close <= prev.open
+
+        entry_price = (cur.high + cur.low) / 2.0
+        mintick = float(self._mintick.get(sym, 0.01))
+        stop_price = cur.low - mintick
+        risk = entry_price - stop_price
+
+        atr = float(market.get_atr(sym, self.atr_len, interval))
+        ok_atr = atr > 0 and risk < atr
+
+        hit1_low = st.get("hit1_low")
+        higher_low_fail = int(st["hit_count"]) == 2 and hit1_low is not None and cur.low > float(hit1_low)
 
         signal = False
-        if st["hit_count"] == 1 and ok_bear and ok_t3 and ok_cs and ok_po and ok_atr:
-            signal = True
-        elif st["hit_count"] == 2 and not signal and ok_bear and ok_t3 and ok_cs and ok_po and ok_atr and not higher_low_fail:
-            signal = True
-        elif st["hit_count"] == 2 and not signal:
-            self.write_log(f"strategy_JH {symbol} H2 higher-low fail, reset support", level="DEBUG")
-            st["sup_price"] = None
-            st["hit_count"] = 0
-            st["hit1_low"] = None
-
-        if signal and flat:
-            target_price = _round_digits(entry_price + self.rr * risk, 2)
-            if pending_ids:
-                for oid in pending_ids:
-                    self._main.handle_intent(INTENT_CANCEL_ORDER, CancelOrderRequest(order_id=oid, symbol=symbol))
-            if self.use_limit:
-                self.send_order(symbol, "BUY", self.quantity, entry_price, "LIMIT")
-                st["limit_bar_idx"] = bar_count
-                self.write_log(f"strategy_JH {symbol} limit BUY @ {entry_price:.2f} qty={self.quantity}", level="INFO")
+        if int(st["hit_count"]) == 1:
+            if ok_bear and ok_t3 and ok_cs and ok_po and ok_atr:
+                signal = True
+        elif int(st["hit_count"]) == 2:
+            if ok_bear and ok_t3 and ok_cs and ok_po and ok_atr and not higher_low_fail:
+                signal = True
             else:
-                self.send_order(symbol, "BUY", self.quantity, entry_price, "MARKET")
-                self.write_log(f"strategy_JH {symbol} market BUY qty={self.quantity}", level="INFO")
-            st["active_stop"] = stop_price
-            st["active_target"] = target_price
-            self.write_log(
-                f"strategy_JH {symbol} signal entry={entry_price} stop={stop_price} target={target_price} rr={self.rr}",
-                level="INFO",
-            )
+                st["sup_price"] = None
+                st["hit_count"] = 0
+                st["hit1_low"] = None
+                return
+
+        if not signal:
+            return
+
+        target_price = entry_price + self.rr * risk
+
+        risk_per_unit = entry_price - stop_price
+        if risk_per_unit <= 0:
+            return
+        risk_amount = self._alloc_per_pair * self.risk_pct
+        qty = risk_amount / risk_per_unit
+        max_qty = self._alloc_per_pair / entry_price if entry_price > 0 else 0.0
+        qty = min(qty, max_qty)
+
+        # Precision: prefer SymbolData.amount_precision when available.
+        amt_dec = 6
+        sym_data = self.get_symbol(sym)
+        ap = getattr(sym_data, "amount_precision", None) if sym_data else None
+        if isinstance(ap, int) and 0 <= ap <= 12:
+            amt_dec = ap
+        qty = _round_qty(qty, amt_dec)
+        if qty <= 0:
+            return
+
+        # Cancel any known pending order for this symbol (engine-side).
+        pending_map = self.get_pending_orders()
+        for oid in pending_map.get(sym, []):
+            self._main.handle_intent(INTENT_CANCEL_ORDER, CancelOrderRequest(order_id=oid, symbol=sym))
+
+        rounded_entry = _round_price(entry_price, mintick)
+        rounded_stop = _round_price(stop_price, mintick)
+        rounded_target = _round_price(target_price, mintick)
+
+        self.open_position(sym, qty, price=rounded_entry, order_type="LIMIT")
+        st["limit_bar_idx"] = int(market.get_bar_count(sym, interval))
+        st["active_stop"] = rounded_stop
+        st["active_target"] = rounded_target
+        st["entry_price"] = rounded_entry
+
+        ht = "H1" if int(st["hit_count"]) == 1 else "H2"
+        self.write_log(
+            f"SIGNAL {ht} {sym}: entry={rounded_entry:.6f} stop={rounded_stop:.6f} "
+            f"target={rounded_target:.6f} qty={qty:.6f} risk=${risk_amount:.2f}",
+            level="INFO",
+        )
+
+    def on_order(self, event: Any) -> None:
+        super().on_order(event)

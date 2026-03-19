@@ -178,6 +178,25 @@ class MarketEngine(BaseEngine):
             return []
         return list(bars)[-n:]
 
+    def get_notional_sum(self, symbol: str, n: int, interval: str = "5m") -> float:
+        """
+        Sum of notional traded over the last n bars.
+
+        Binance klines in this codebase only store base `volume`, not quote-volume.
+        We approximate notional as sum(volume * close).
+        """
+        key = self._bar_key(symbol, interval)
+        bars = self._bars.get(key)
+        if not bars or len(bars) < n:
+            return 0.0
+        out = 0.0
+        for b in list(bars)[-n:]:
+            v = float(getattr(b, "volume", 0.0) or 0.0)
+            c = float(getattr(b, "close", 0.0) or 0.0)
+            if v > 0 and c > 0:
+                out += v * c
+        return out
+
     # ---------- historical backfill ----------
 
     def ensure_history(self, symbol: str, interval: str, bars: int) -> int:

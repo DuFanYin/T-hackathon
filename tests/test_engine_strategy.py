@@ -47,10 +47,10 @@ class TestStrategyEngine:
         assert strat.strategy_name == "strategy_JH"
         assert "BTCUSDT" in strat.symbols
 
-    def test_add_strategy_strat2_momentum(self, main_engine_mock):
+    def test_add_strategy_strategy_maliki(self, main_engine_mock):
         engine = StrategyEngine(main_engine=main_engine_mock)
-        strat = engine.add_strategy_by_name("Strat2Momentum")
-        assert strat.strategy_name == "Strat2Momentum"
+        strat = engine.add_strategy_by_name("strategy_maliki")
+        assert strat.strategy_name == "strategy_maliki"
         assert "BTCUSDT" in strat.symbols
 
     def test_get_strategy_none_for_missing(self, main_engine_mock):
@@ -90,5 +90,5 @@ class TestAvailableStrategies:
 
     def test_contains_expected_strategies(self):
         assert "strategy_JH" in AVAILABLE_STRATEGIES
-        assert "Strat2Momentum" in AVAILABLE_STRATEGIES
+        assert "strategy_maliki" in AVAILABLE_STRATEGIES
         assert "StratTestAlt" in AVAILABLE_STRATEGIES

@@ -56,8 +56,8 @@ class TestMainEngine:
     def test_add_all_strategies(self, mock_refresh, mock_info):
         main = MainEngine(env_mode="mock")
         main.add_strategy("strategy_JH")
-        main.add_strategy("Strat2Momentum")
+        main.add_strategy("strategy_maliki")
         main.add_strategy("StratTestAlt")
         assert main.get_strategy("strategy_JH") is not None
-        assert main.get_strategy("Strat2Momentum") is not None
+        assert main.get_strategy("strategy_maliki") is not None
         assert main.get_strategy("StratTestAlt") is not None

@@ -30,8 +30,8 @@ def main() -> int:
 
     # 2. Strategy registration
     print("2. Checking AVAILABLE_STRATEGIES...")
-    if "Strat2Momentum" not in AVAILABLE_STRATEGIES:
-        print("   FAIL: Strat2Momentum not in AVAILABLE_STRATEGIES")
+    if "strategy_maliki" not in AVAILABLE_STRATEGIES:
+        print("   FAIL: strategy_maliki not in AVAILABLE_STRATEGIES")
         return 1
     if "strategy_JH" not in AVAILABLE_STRATEGIES:
         print("   FAIL: strategy_JH not in AVAILABLE_STRATEGIES")
@@ -48,9 +48,9 @@ def main() -> int:
     print("   OK\n")
 
     # 4. Add strategies
-    print("4. Adding Strat2Momentum...")
+    print("4. Adding strategy_maliki...")
     try:
-        main.add_strategy("Strat2Momentum")
+        main.add_strategy("strategy_maliki")
     except Exception as e:
         print(f"   FAIL: {e}")
         return 1
@@ -66,7 +66,7 @@ def main() -> int:
 
     # 5. Get strategy and verify
     print("5. Verifying strategy instance...")
-    strat = main.get_strategy("Strat2Momentum")
+    strat = main.get_strategy("strategy_maliki")
     if strat is None:
         print("   FAIL: Strategy not found")
         return 1
@@ -78,7 +78,7 @@ def main() -> int:
     # 6. Init and start strategy
     print("6. Initializing and starting strategy...")
     try:
-        main.start_strategy("Strat2Momentum")
+        main.start_strategy("strategy_maliki")
         main.start_strategy("strategy_JH")
     except Exception as e:
         print(f"   FAIL: {e}")
@@ -93,7 +93,7 @@ def main() -> int:
     # 8. Stop strategy and disconnect
     print("\n8. Stopping strategy and disconnecting...")
     try:
-        main.stop_strategy("Strat2Momentum")
+        main.stop_strategy("strategy_maliki")
         main.stop_strategy("strategy_JH")
         main.disconnect()
     except Exception as e:

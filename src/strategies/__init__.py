@@ -2,7 +2,7 @@
 Strategy implementations and template.
 """
 
-from .factory import StrategyJH, Strat2Momentum
+from .factory import StrategyJH, StrategyMaliki
 from .template import StrategyTemplate
 
-__all__ = ["StrategyTemplate", "StrategyJH", "Strat2Momentum"]
+__all__ = ["StrategyTemplate", "StrategyJH", "StrategyMaliki"]

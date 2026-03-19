@@ -14,11 +14,11 @@ if TYPE_CHECKING:
     from src.strategies.template import StrategyTemplate
 
 # Hard-coded available strategies: name -> class. Add new strategy classes here.
-from src.strategies.factory import StrategyJH, Strat2Momentum, StratTestAlt
+from src.strategies.factory import StrategyJH, StrategyMaliki, StratTestAlt
 
 AVAILABLE_STRATEGIES: Dict[str, Type] = {
     "strategy_JH": StrategyJH,
-    "Strat2Momentum": Strat2Momentum,
+    "strategy_maliki": StrategyMaliki,
     "StratTestAlt": StratTestAlt,
 }
 

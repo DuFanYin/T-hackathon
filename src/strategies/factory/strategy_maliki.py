@@ -1,13 +1,13 @@
 """
-Strat2: Multi-Asset Momentum Rotation (v2)
+strategy_maliki: Multi-Asset Momentum Rotation (v2) — tuned (48h / top1 / daily rebalance)
 
 Plugs into the team's event-driven framework via StrategyTemplate.
 Signal source: MarketEngine (bars from GatewayEngine Binance 5m injection).
 Execution: via framework's send_order() -> GatewayEngine -> Roostoo API.
 
-Production parameters (from backtest validation):
-  lookback=96 (8h), top_n=2, rebalance_every=48 (4h), trailing_stop=3%,
-  min_hold=24 (2h), regime_ma=288 (24h BTC MA)
+Tuned parameters (per request):
+  lookback=576 (48h on 5m bars), top_n=1, rebalance_every=288 (24h),
+  trailing_stop=8%, min_hold=288 (24h), min_momentum=3.0%
 
 Capital allocation: 85% of portfolio ($850k of $1M).
 """
@@ -22,7 +22,7 @@ from src.strategies.template import StrategyTemplate
 if TYPE_CHECKING:
     from src.engines.engine_main import MainEngine
 
-log = logging.getLogger("strat2")
+log = logging.getLogger("strategy_maliki")
 
 # Coins to track — base symbols (MarketEngine uses BTCUSDT, ETHUSDT, etc.)
 TRACKED_COINS = [
@@ -37,7 +37,7 @@ TRACKED_COINS = [
 ]
 
 
-class Strat2Momentum(StrategyTemplate):
+class StrategyMaliki(StrategyTemplate):
     """
     Multi-asset momentum rotation with BTC regime filter.
 
@@ -51,7 +51,7 @@ class Strat2Momentum(StrategyTemplate):
     def __init__(
         self,
         main_engine: "MainEngine",
-        strategy_name: str = "Strat2Momentum",
+        strategy_name: str = "strategy_maliki",
         setting: dict[str, Any] | None = None,
     ) -> None:
         s = dict(setting or {})
@@ -70,16 +70,26 @@ class Strat2Momentum(StrategyTemplate):
         # - "gateway": BTCUSDT (preferred)
         # - "slash": BTC/USD (passed through by gateway)
 
-        # ── Strategy parameters (validated by backtest) ──
-        self.lookback_candles: int = int(s.get("lookback_candles", 96))
-        self.top_n: int = int(s.get("top_n", 2))
-        self.rebalance_every: int = int(s.get("rebalance_every", 48))
-        self.trailing_stop_pct: float = float(s.get("trailing_stop_pct", 3.0))
-        self.min_hold_candles: int = int(s.get("min_hold_candles", 24))
-        self.regime_ma_candles: int = int(s.get("regime_ma_candles", 288))
-        self.min_momentum_pct: float = float(s.get("min_momentum_pct", 0.5))
+        # ── Strategy parameters ──
+        # 48h lookback on 5m bars = 48*60/5 = 576 candles.
+        self.lookback_candles: int = int(s.get("lookback_candles", 576))
+        # Concentrate into top-1.
+        self.top_n: int = int(s.get("top_n", 1))
+        # 24h rebalance on timer ticks (assuming 1 tick per 5m cadence) = 288.
+        self.rebalance_every: int = int(s.get("rebalance_every", 288))
+        # Wider trail to reduce churn.
+        self.trailing_stop_pct: float = float(s.get("trailing_stop_pct", 8.0))
+        # Minimum hold 24h (on 5m ticks) = 288.
+        self.min_hold_candles: int = int(s.get("min_hold_candles", 288))
+        # BTC regime MA: 48h on 5m bars = 576.
+        self.regime_ma_candles: int = int(s.get("regime_ma_candles", 576))
+        # Require strong trend; if none qualify, stay in cash.
+        self.min_momentum_pct: float = float(s.get("min_momentum_pct", 3.0))
+        # Liquidity filter: approximate 24h notional (sum(volume*close) over last 288 bars).
+        self.min_notional_24h: float = float(s.get("min_notional_24h", 1_000_000))
         self.capital_allocation: float = float(s.get("capital_allocation", 850_000))
-        self.max_single_alloc_pct: float = float(s.get("max_single_alloc_pct", 50.0))
+        # top_n=1 by default; allow full allocation.
+        self.max_single_alloc_pct: float = float(s.get("max_single_alloc_pct", 100.0))
 
         # ── Internal state ──
         self._tick_count: int = 0
@@ -98,7 +108,7 @@ class Strat2Momentum(StrategyTemplate):
         return f"{coin}USDT"
 
     def _log_reconciliation(self) -> None:
-        """Log Strat2 internal positions vs engine holdings and gateway pending orders."""
+        """Log strategy_maliki internal positions vs engine holdings and gateway pending orders."""
         strat_pos = {self._format_order_symbol(c): p["qty"] for c, p in self._positions.items()}
         eng_pos = {}
         if hasattr(self._main, "strategy_engine") and self._main.strategy_engine:
@@ -108,12 +118,12 @@ class Strat2Momentum(StrategyTemplate):
         diff = set(strat_pos.keys()) ^ set(eng_pos.keys())
         if diff:
             self.write_log(
-                f"RECONCILE: Strat2={list(strat_pos)} | Engine={list(eng_pos)} | pending={list(pending)} | "
+                f"RECONCILE: maliki={list(strat_pos)} | Engine={list(eng_pos)} | pending={list(pending)} | "
                 f"mismatch={list(diff)} — check fill/order status",
                 level="WARN",
             )
         elif strat_pos or pending:
-            self.write_log(f"RECONCILE: OK | Strat2={strat_pos} Engine={eng_pos} pending={pending}", level="DEBUG")
+            self.write_log(f"RECONCILE: OK | maliki={strat_pos} Engine={eng_pos} pending={pending}", level="DEBUG")
 
     # ──────────────────────────────────────────
     # Lifecycle
@@ -121,7 +131,7 @@ class Strat2Momentum(StrategyTemplate):
 
     def on_init_logic(self) -> None:
         self.write_log(
-            f"Strat2Momentum init: lookback={self.lookback_candles} "
+            f"strategy_maliki init: lookback={self.lookback_candles} "
             f"top_n={self.top_n} rebal={self.rebalance_every} "
             f"trail={self.trailing_stop_pct}% min_hold={self.min_hold_candles} "
             f"regime_ma={self.regime_ma_candles} alloc=${self.capital_allocation:,.0f} "
@@ -133,7 +143,7 @@ class Strat2Momentum(StrategyTemplate):
         # Backfill enough candles so init/start don't wait for slow warmup.
         ival = self.interval.binance
         reqs: list[dict[str, object]] = []
-        # Regime filter uses BTC MA (default 288 == 24h on 5m candles).
+        # Regime filter uses BTC MA.
         reqs.append({"symbol": "BTCUSDT", "interval": ival, "bars": int(self.regime_ma_candles)})
         # Momentum calculations need lookback window for each tracked coin.
         lookback = int(self.lookback_candles)
@@ -142,7 +152,7 @@ class Strat2Momentum(StrategyTemplate):
         return reqs
 
     def on_stop_logic(self) -> None:
-        self.write_log("Strat2Momentum stopping — closing all positions", level="INFO")
+        self.write_log("strategy_maliki stopping — closing all positions", level="INFO")
         self._close_all_positions("strategy_stop")
 
     # ──────────────────────────────────────────
@@ -223,10 +233,14 @@ class Strat2Momentum(StrategyTemplate):
         if not me:
             return []
         rankings: list[dict] = []
+        vol_window = 288  # 24h on 5m bars
         for coin in TRACKED_COINS:
             symbol = f"{coin}USDT"
             bars = me.get_last_bars(symbol, self.lookback_candles, self.interval.binance)
             if len(bars) < self.lookback_candles:
+                continue
+            notional_24h = me.get_notional_sum(symbol, vol_window, self.interval.binance)
+            if notional_24h < self.min_notional_24h:
                 continue
             past = bars[0].close
             current = bars[-1].close
@@ -241,6 +255,7 @@ class Strat2Momentum(StrategyTemplate):
                 "price": current,
                 "roostoo_pair": self._format_pair(coin),
                 "roostoo_symbol": self._format_order_symbol(coin),
+                "notional_24h": notional_24h,
             })
         rankings.sort(key=lambda x: x["momentum_pct"], reverse=True)
         return rankings
@@ -308,7 +323,15 @@ class Strat2Momentum(StrategyTemplate):
                 level="INFO",
             )
         else:
-            self.write_log("REBALANCE: No assets meet momentum threshold", level="WARN")
+            self.write_log(
+                f"REBALANCE: No assets meet momentum threshold ({self.min_momentum_pct:.2f}%) — staying in cash",
+                level="WARN",
+            )
+            # If nothing qualifies, rotate to cash (respect min hold).
+            for coin in list(self._positions.keys()):
+                ticks_held = self._tick_count - self._positions[coin]["entry_tick"]
+                if ticks_held >= self.min_hold_candles:
+                    self._close_position(coin, "no_qualifiers")
             return
 
         target_coins = [r["coin"] for r in rankings[:self.top_n]]
@@ -346,9 +369,20 @@ class Strat2Momentum(StrategyTemplate):
     def _open_position(self, coin: str, pair: str, price: float,
                        momentum: float, slots_open: int) -> None:
         """Buy via framework's send_order."""
-        # Size: equal allocation across available slots
-        max_per = self.capital_allocation * (self.max_single_alloc_pct / 100)
-        alloc = min(self.capital_allocation / self.top_n, max_per)
+        # Size: prefer cached USD balance (no exchange call), fallback to configured capital_allocation.
+        usd_balance = 0.0
+        gw = getattr(self._main, "gateway_engine", None)
+        if gw and hasattr(gw, "get_balance"):
+            bal = gw.get_balance() or {}
+            wallet = bal.get("Wallet") if isinstance(bal, dict) else None
+            if isinstance(wallet, dict):
+                usd = wallet.get("USD")
+                if isinstance(usd, dict):
+                    usd_balance = float((usd.get("Free") or 0.0)) + float((usd.get("Lock") or 0.0))
+
+        portfolio_value = usd_balance if usd_balance > 0 else float(self.capital_allocation)
+        max_per = portfolio_value * (self.max_single_alloc_pct / 100)
+        alloc = min(portfolio_value / max(self.top_n, 1), max_per)
 
         qty = alloc / price
         # Round to reasonable precision
