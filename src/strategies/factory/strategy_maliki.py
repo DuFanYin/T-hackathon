@@ -42,10 +42,10 @@ class StrategyMaliki(StrategyTemplate):
     Multi-asset momentum rotation with BTC regime filter.
 
     Every `rebalance_every` timer ticks:
-      1. Check regime: is BTC above its 24h moving average? If not, close all and go cash.
-      2. Rank all assets by 8-hour momentum (% return over last 96 5m-candles).
-      3. Hold the top 2 movers. Exit anything not in top 2 (if min hold met).
-      4. Trail every position with a 3% trailing stop (after 2h min hold).
+      1. Check regime: is BTC above its 48h moving average? If not, close all and go cash.
+      2. Rank all assets by 48h momentum (% return over last 576 5m-candles).
+      3. Hold the top 1 mover. Exit if a different coin takes #1 (if min hold met).
+      4. Trail every position with an 8% trailing stop (after 24h min hold).
     """
 
     def __init__(

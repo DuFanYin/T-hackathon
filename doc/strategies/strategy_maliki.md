@@ -97,13 +97,15 @@ Runs on **5m bars**. Every timer tick:
 
 ### Key parameters (defaults)
 
-- **`lookback_candles`**: `96` (8h on 5m bars)
-- **`top_n`**: `2`
-- **`rebalance_every`**: `48` (4h, since the strategy ticks each timer event)
-- **`trailing_stop_pct`**: `3.0`
-- **`min_hold_candles`**: `24` (2h)
+Validated via neighborhood check + walk-forward (do not revert to old values).
+
+- **`lookback_candles`**: `576` (48h on 5m bars)
+- **`top_n`**: `1` (single strongest coin)
+- **`rebalance_every`**: `288` (24h, daily rebalance)
+- **`trailing_stop_pct`**: `8.0`
+- **`min_hold_candles`**: `288` (24h minimum hold)
 - **`regime_ma_candles`**: `576` (48h BTC MA)
-- **`min_momentum_pct`**: `0.5`
+- **`min_momentum_pct`**: `3.0` (skip if nothing above 3%)
 - **`min_notional_24h`**: `1_000_000` (approx quote notional over last 24h; computed as \(\sum volume \times close\))
 - **`capital_allocation`**: `850_000`
 - **`max_single_alloc_pct`**: `100.0`
