@@ -1,15 +1,12 @@
 import type {
-  AddStrategyPayload,
-  AddStrategyResponse,
   AccountBalanceResponse,
   AccountOrdersResponse,
   AccountPendingCountResponse,
+  AccountPnlResponse,
   AvailableStrategiesResponse,
   CloseAllPositionsResponse,
   ClosePositionsPayload,
   ClosePositionsResponse,
-  DeleteStrategyPayload,
-  DeleteStrategyResponse,
   LogsTailResponse,
   OrdersResponse,
   PositionsResponse,
@@ -70,14 +67,9 @@ export const api = {
   systemStatus: () => http<SystemStatus>('/system/status'),
   systemStart: (mode: 'mock' | 'real') =>
     http<SystemStatus>('/system/start', { method: 'POST', body: JSON.stringify({ mode }) }),
-  systemStop: () => http<SystemStatus>('/system/stop', { method: 'POST', body: JSON.stringify({}) }),
+  systemStop: () => http<SystemStatus>('/system/stop', { method: 'POST' }),
   availableStrategies: () => http<AvailableStrategiesResponse>('/strategies/available'),
   runningStrategies: () => http<RunningStrategiesResponse>('/strategies/running'),
-  addStrategy: (payload: AddStrategyPayload) =>
-    http<AddStrategyResponse>('/strategies/add', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
   startStrategy: (payload: StartStrategyPayload) =>
     http<StartStrategyResponse>('/strategies/start', {
       method: 'POST',
@@ -93,11 +85,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  deleteStrategy: (payload: DeleteStrategyPayload) =>
-    http<DeleteStrategyResponse>('/strategies/delete', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
   positions: () => http<PositionsResponse>('/positions'),
   closePositions: (payload: ClosePositionsPayload) =>
     http<ClosePositionsResponse>('/positions/close', {
@@ -107,13 +94,12 @@ export const api = {
   closeAllPositions: () =>
     http<CloseAllPositionsResponse>('/positions/close_all', {
       method: 'POST',
-      body: JSON.stringify({}),
     }),
   logsTail: (n = 200) => http<LogsTailResponse>(`/logs/tail?n=${n}`),
   accountBalance: () => http<AccountBalanceResponse>('/account/balance'),
   accountPendingCount: () => http<AccountPendingCountResponse>('/account/pending_count'),
-  accountOrders: (pendingOnly = true, limit = 200) =>
-    http<AccountOrdersResponse>(`/account/orders?pending_only=${pendingOnly ? 'true' : 'false'}&limit=${limit}`),
+  accountPnl: () => http<AccountPnlResponse>('/account/pnl'),
+  accountOrders: () => http<AccountOrdersResponse>('/account/orders'),
   orders: (strategy?: string, symbol?: string, limit = 500) => {
     const q = new URLSearchParams()
     if (strategy) q.set('strategy', strategy)

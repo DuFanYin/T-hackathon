@@ -49,7 +49,7 @@ Event-driven crypto trading engine with a lightweight **HTTP control API** and *
 
    - `GET /system/status`, `POST /system/start`, `POST /system/stop`
    - `GET /strategies/available`, `GET /strategies/running`
-   - `POST /strategies/add|init|start|stop|delete`
+   - `POST /strategies/start|stop`
    - `GET /positions`, `GET /symbols`
    - `GET /logs/tail`, `GET /logs/stream` (SSE)
 

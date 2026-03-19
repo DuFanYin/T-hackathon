@@ -372,9 +372,8 @@ class Strat2Momentum(StrategyTemplate):
         )
 
         roostoo_symbol = self._format_order_symbol(coin)
-        order_id = self.send_order(
+        order_id = self.open_position(
             symbol=roostoo_symbol,
-            side="BUY",
             quantity=qty,
             price=limit_price,
             order_type="LIMIT",
@@ -410,11 +409,9 @@ class Strat2Momentum(StrategyTemplate):
             level="INFO",
         )
 
-        self.send_order(
+        self.close_position(
             symbol=pos["roostoo_symbol"],
-            side="SELL",
             quantity=pos["qty"],
-            price=current_price,
             order_type="MARKET",
         )
 

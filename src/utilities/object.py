@@ -107,6 +107,7 @@ class OrderData:
     quantity: float
     price: float
     status: str  # e.g. "NEW", "PARTIALLY_FILLED", "FILLED", "CANCELLED"
+    order_type: str = "LIMIT"  # e.g. "LIMIT", "MARKET"
 
     # Fill info (from Roostoo OrderDetail / OrderMatched)
     filled_quantity: float = 0.0

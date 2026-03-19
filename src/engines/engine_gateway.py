@@ -2,36 +2,38 @@
 Gateway engine for Roostoo mock exchange.
 
 - Stateless REST: no persistent connections, every call is signed.
-- Market data: on each timer tick, pull ticker for each trading pair and emit `EVENT_BAR` with `BarData`.
 - Orders: send/cancel via `/v3/place_order` and `/v3/cancel_order` using HMAC-SHA256 signatures.
+- Bar data is owned by MarketEngine (Binance klines); gateway does not emit bars.
 
-API keys are read from environment:
-- General_Portfolio_Testing_API_KEY / General_Portfolio_Testing_API_SECRET
-- Competition_API_KEY / Competition_API_SECRET
+API usage aligned with scripts/check_roostoo_api.py (canonical successful example):
+- place_order(symbol, side, quantity, price=None, order_type): MARKET uses price=None
+- cancel_order(order_id=None, symbol=None): pair (symbol) or order_id
+- query_order(order_id=None, symbol=None, pending_only=None, limit=None)
 
-By default this engine uses the general testing credentials.
+API keys from env: General_Portfolio_Testing_API_KEY/SECRET or Competition_API_KEY/SECRET.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
+import sqlite3
 import time
 from typing import Any, Dict, Optional
 
 import requests
 
 from src.utilities.base_engine import BaseEngine
-from src.utilities.events import EVENT_BAR, EVENT_ORDER
-from src.utilities.interval import Interval
-from src.utilities.object import BarData, OrderData
+from src.utilities.object import OrderData
 
-from dataclasses import dataclass
+# Statuses that mean the order is finished (no more polling)
+_FINISHED_STATUSES = frozenset({"FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"})
 
 
 class GatewayEngine(BaseEngine):
-    """Roostoo vendor adapter: send_order/cancel_order; on_timer() fetches tickers and emits EVENT_BAR per trading pair."""
+    """Roostoo vendor adapter: send_order/cancel_order; on_timer() polls order status and refreshes account cache."""
 
     DEFAULT_MOCK_BASE_URL = "https://mock-api.roostoo.com"
     DEFAULT_REAL_BASE_URL = "https://api.roostoo.com"
@@ -76,25 +78,28 @@ class GatewayEngine(BaseEngine):
                 source="Gateway",
             )
 
-        # order_id -> tracking info for polling query_order and emitting EVENT_ORDER
-        self._order_tracks: dict[str, _OrderTrack] = {}
-        # strategy_name -> set of currently pending order_ids (for quick lookup/inspection)
+        # order_id -> OrderData: canonical order store; created on placement, updated by query_order
+        self._order_map: dict[str, OrderData] = {}
+        # strategy_name -> set of order_ids not yet finished (for polling and pending_by_strategy)
         self._strategy_pending: dict[str, set[str]] = {}
 
         # ---------------- cached account state (refreshed by engine timer, NOT by UI) ----------------
         self._cached_balance: dict[str, Any] | None = None
-        self._cached_pending_count: dict[str, Any] | None = None
         self._cached_balance_ts: float | None = None
-        self._cached_pending_count_ts: float | None = None
-        self._account_cache_interval_sec: float = 10.0
+        self._last_order_query_ts: float | None = None  # when we last ran query_order (for UI)
+        self._timer_seconds: int = 0  # counter: increments each timer tick, reset on refresh
 
     # ---------------- helpers ----------------
 
+    @staticmethod
+    def _canonical_body(params: Dict[str, Any]) -> str:
+        """Build canonical form for signing (Roostoo: sortParamsByKey, k=v joined by &)."""
+        return "&".join(f"{k}={params[k]}" for k in sorted(params.keys()))
+
     def _headers(self, params: Dict[str, Any]) -> Dict[str, str]:
-        query_string = "&".join(f"{k}={params[k]}" for k in sorted(params.keys()))
+        body = self._canonical_body(params)
         secret_bytes = self._secret.encode("utf-8")
-        sig = hmac.new(secret_bytes, query_string.encode("utf-8"), hashlib.sha256).hexdigest()
-        # Some environments expect both legacy RST-API-KEY and generic api-key headers.
+        sig = hmac.new(secret_bytes, body.encode("utf-8"), hashlib.sha256).hexdigest()
         return {
             "RST-API-KEY": self._api_key,
             "MSG-SIGNATURE": sig,
@@ -126,7 +131,12 @@ class GatewayEngine(BaseEngine):
         try:
             headers = self._headers(params) if signed else None
             url = f"{self.base_url}{path}"
-            resp = requests.get(url, params=params, headers=headers, timeout=3.0)
+            # Use canonical body for GET so query string matches signature (EC2 vs local)
+            if signed and params:
+                url = f"{url}?{self._canonical_body(params)}"
+                resp = requests.get(url, headers=headers, timeout=3.0)
+            else:
+                resp = requests.get(url, params=params, headers=headers, timeout=3.0)
             if resp.status_code != 200:
                 hint = self._http_status_hint(resp.status_code, signed)
                 self.log(
@@ -179,9 +189,13 @@ class GatewayEngine(BaseEngine):
 
     def _request_post(self, path: str, data: Dict[str, Any], signed: bool) -> Dict[str, Any] | None:
         try:
+            # Use canonical body so request body matches signature (EC2 vs local)
+            body = self._canonical_body(data) if data else ""
             headers = self._headers(data) if signed else None
+            if headers and "Content-Type" not in headers:
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
             url = f"{self.base_url}{path}"
-            resp = requests.post(url, data=data, headers=headers, timeout=3.0)
+            resp = requests.post(url, data=body, headers=headers, timeout=3.0)
             if resp.status_code != 200:
                 hint = self._http_status_hint(resp.status_code, signed)
                 self.log(
@@ -298,16 +312,6 @@ class GatewayEngine(BaseEngine):
             params["pair"] = self._to_roostoo_pair(symbol)
         return self._request_get("/v3/ticker", params=params, signed=False)
 
-    def get_balance(self) -> Dict[str, Any] | None:
-        """GET /v3/balance (SIGNED)."""
-        params: Dict[str, Any] = {"timestamp": self._ts_ms()}
-        return self._request_get("/v3/balance", params=params, signed=True)
-
-    def pending_count(self) -> Dict[str, Any] | None:
-        """GET /v3/pending_count (SIGNED)."""
-        params: Dict[str, Any] = {"timestamp": self._ts_ms()}
-        return self._request_get("/v3/pending_count", params=params, signed=True)
-
     def place_order(
         self,
         symbol: str,
@@ -385,29 +389,26 @@ class GatewayEngine(BaseEngine):
         return self._request_post("/v3/query_order", data=payload, signed=True)
 
     def on_timer(self) -> None:
-        """Poll orders + refresh cached account state; market data is owned by MarketEngine.on_timer()."""
+        """Poll orders + refresh cached account state every 10 timer ticks."""
+        self._timer_seconds += 1
+        if self._timer_seconds < 10:
+            return
+        self._timer_seconds = 0
+
         self._poll_orders_and_emit()
-        self._refresh_account_cache(force=False)
+        self._refresh_account_cache()
 
     # ---------------- cached account snapshot (for control UI) ----------------
 
-    def _refresh_account_cache(self, *, force: bool) -> None:
+    def _refresh_account_cache(self) -> None:
         """
-        Refresh cached balance/pending_count on a throttle.
-
-        Important: control-plane UI reads cached values only; it must not drive exchange calls.
+        Refresh cached balance and pending orders (from query_order).
+        Called every 10 ticks from on_timer.
         """
         now = time.time()
-        last = min(
-            (t for t in (self._cached_balance_ts, self._cached_pending_count_ts) if t is not None),
-            default=0.0,
-        )
-        if (not force) and (now - last < self._account_cache_interval_sec):
-            return
-
         try:
-            self.log("query: /v3/balance (cache refresh)" + (" [force]" if force else ""), level="DEBUG", source="Gateway")
-            bal = self.get_balance()
+            self.log("query: /v3/balance (cache refresh)", level="DEBUG", source="Gateway")
+            bal = self._request_get("/v3/balance", params={"timestamp": self._ts_ms()}, signed=True)
             if isinstance(bal, dict):
                 # Roostoo can return SpotWallet instead of Wallet.
                 # Normalize so the control UI has a consistent field.
@@ -424,79 +425,206 @@ class GatewayEngine(BaseEngine):
             )
 
         try:
-            self.log("query: /v3/pending_count (cache refresh)" + (" [force]" if force else ""), level="DEBUG", source="Gateway")
-            pc = self.pending_count()
-            if isinstance(pc, dict):
-                self._cached_pending_count = pc
-                self._cached_pending_count_ts = now
+            self.log("query: /v3/query_order pending_only (cache refresh)", level="DEBUG", source="Gateway")
+            qo = self.query_order(pending_only=True, limit=200)
+            if isinstance(qo, dict):
+                self._last_order_query_ts = now
+                # Maintain _order_map: merge OrderMatched into our order store (pending count derived from _strategy_pending)
+                matched = qo.get("OrderMatched")
+                if isinstance(matched, list):
+                    for item in matched:
+                        if isinstance(item, dict):
+                            self._merge_order_from_api(item, strategy_name=None)
         except Exception as e:
             self.log(
-                f"ERROR: /v3/pending_count cache refresh failed | exception={type(e).__name__}: {e} | "
-                f"account UI will show stale or empty pending count",
+                f"ERROR: query_order pending cache refresh failed | exception={type(e).__name__}: {e} | "
+                f"account UI will show stale or empty pending orders",
                 level="ERROR",
                 source="Gateway",
             )
 
-    def get_cached_balance(self) -> dict[str, Any] | None:
+    def get_balance(self) -> dict[str, Any] | None:
+        """Return cached balance (no API call). Refreshed by on_timer / _refresh_account_cache."""
         return self._cached_balance
 
-    def get_cached_pending_count(self) -> dict[str, Any] | None:
-        return self._cached_pending_count
+    def get_cached_balance(self) -> dict[str, Any] | None:
+        """Alias for get_balance()."""
+        return self.get_balance()
+
+    def get_pending_count(self) -> dict[str, Any]:
+        """Return pending count derived from _order_map / _strategy_pending (no API call)."""
+        pairs: dict[str, int] = {}
+        for strat, ids in self._strategy_pending.items():
+            for oid in ids:
+                data = self._order_map.get(oid)
+                if data is None:
+                    continue
+                pair = self._to_roostoo_pair(data.symbol) if data.symbol else ""
+                if pair:
+                    pairs[pair] = pairs.get(pair, 0) + 1
+        return {
+            "Success": True,
+            "ErrMsg": "",
+            "TotalPending": sum(pairs.values()),
+            "OrderPairs": pairs,
+        }
+
+    def get_cached_pending_count(self) -> dict[str, Any]:
+        """Alias for get_pending_count()."""
+        return self.get_pending_count()
+
+    def pending_count(self) -> dict[str, Any]:
+        """Alias for get_pending_count() (backward compat)."""
+        return self.get_pending_count()
+
+    def _merge_order_from_api(self, item: dict[str, Any], strategy_name: str | None = None) -> OrderData | None:
+        """Create or update OrderData in _order_map from API detail. Returns the OrderData."""
+        oid = str(item.get("OrderID", "") or "")
+        if not oid:
+            return None
+        strat = strategy_name
+        if strat is None and oid in self._order_map:
+            strat = self._order_map[oid].strategy_name or "?"
+        strat = strat or "?"
+        pair = str(item.get("Pair", "") or "")
+        if "/" in pair:
+            base, quote = pair.split("/", 1)
+            symbol = f"{base}USDT" if quote == "USD" else f"{base}{quote}"
+        else:
+            symbol = ""
+
+        # Roostoo field names have varied across environments/docs; accept common aliases.
+        fq_raw = (
+            item.get("FilledQuantity")
+            if item.get("FilledQuantity") is not None
+            else item.get("FilledQty")
+            if item.get("FilledQty") is not None
+            else item.get("filled_quantity")
+            if item.get("filled_quantity") is not None
+            else 0
+        )
+        favg_raw = (
+            item.get("FilledAverPrice")
+            if item.get("FilledAverPrice") is not None
+            else item.get("FilledAvgPrice")
+            if item.get("FilledAvgPrice") is not None
+            else item.get("FilledAveragePrice")
+            if item.get("FilledAveragePrice") is not None
+            else item.get("filled_avg_price")
+            if item.get("filled_avg_price") is not None
+            else 0
+        )
+
+        data = OrderData(
+            order_id=oid,
+            symbol=symbol,
+            side=str(item.get("Side", "") or ""),
+            quantity=float(item.get("Quantity", 0) or 0),
+            price=float(item.get("Price", 0) or 0),
+            status=str(item.get("Status", "") or "PENDING"),
+            order_type=str(item.get("Type", "") or "LIMIT"),
+            filled_quantity=float(fq_raw or 0),
+            filled_avg_price=float(favg_raw or 0),
+            role=str(item.get("Role", "") or "") or None,
+            stop_type=str(item.get("StopType", "") or "") or None,
+            create_ts=item.get("CreateTimestamp"),
+            finish_ts=item.get("FinishTimestamp"),
+            strategy_name=strat or None,
+        )
+        self._order_map[oid] = data
+        status = (data.status or "").upper()
+        if status not in _FINISHED_STATUSES:
+            if strat not in self._strategy_pending:
+                self._strategy_pending[strat] = set()
+            self._strategy_pending[strat].add(oid)
+        else:
+            if strat in self._strategy_pending:
+                self._strategy_pending[strat].discard(oid)
+        return data
 
     def get_cached_orders_snapshot(self) -> dict[str, Any]:
         """
         Snapshot of order-related cached state without hitting the exchange.
-
-        - pending_by_strategy: current pending order ids per strategy (from local tracking)
-        - tracks: last known per-order status/fill (from polling)
+        tracks: from _order_map (OrderData), maintained by placement + query_order.
+        Order table shows status; no separate pending display needed.
         """
+        tracks = []
+        for d in self._order_map.values():
+            pair = self._to_roostoo_pair(d.symbol) if d.symbol else ""
+            tracks.append({
+                "order_id": d.order_id,
+                "strategy_name": d.strategy_name or "?",
+                "symbol": d.symbol,
+                "pair": pair,
+                "side": d.side,
+                "type": getattr(d, "order_type", "") or "",
+                "status": d.status,
+                "price": d.price,
+                "quantity": d.quantity,
+                "filled_quantity": d.filled_quantity,
+                "filled_avg_price": d.filled_avg_price,
+                "create_timestamp": d.create_ts,
+                "finish_timestamp": d.finish_ts,
+                "role": d.role or "",
+                "stop_type": d.stop_type or "",
+            })
         return {
-            "pending_by_strategy": self.get_pending_orders(),
-            "tracks": [
-                {
-                    "order_id": t.order_id,
-                    "strategy_name": t.strategy_name,
-                    "symbol": t.symbol,
-                    "side": t.side,
-                    "last_status": t.last_status,
-                    "last_filled_qty": t.last_filled_qty,
-                }
-                for t in self._order_tracks.values()
-            ],
+            "tracks": tracks,
             "cached_balance_ts": self._cached_balance_ts,
-            "cached_pending_count_ts": self._cached_pending_count_ts,
+            "last_order_query_ts": self._last_order_query_ts,
         }
 
     # ---------------- order polling -> events ----------------
 
-    def register_order(self, strategy_name: str, order_id: str, symbol: str, side: str) -> None:
-        """Register an order so gateway can poll status via query_order and emit EVENT_ORDER updates."""
+    def register_order(
+        self,
+        strategy_name: str,
+        order_id: str,
+        symbol: str,
+        side: str,
+        quantity: float = 0.0,
+        price: float = 0.0,
+        order_type: str = "LIMIT",
+        api_detail: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Create OrderData from placement and save into strategy order map.
+        Subsequent query_order calls will maintain this map with updated data.
+        """
         if not order_id:
             return
         oid = str(order_id)
         strat = strategy_name or "default"
-        self._order_tracks[oid] = _OrderTrack(
-            order_id=oid,
-            strategy_name=strat,
-            symbol=str(symbol),
-            side=str(side or "").upper(),
-        )
-        if strat not in self._strategy_pending:
-            self._strategy_pending[strat] = set()
-        self._strategy_pending[strat].add(oid)
-
-    def get_pending_orders(self, strategy_name: str | None = None) -> dict[str, list[str]]:
-        """
-        Return current pending order ids.
-
-        - If strategy_name is given, returns {strategy_name: [order_ids]} (or {} if none).
-        - If None, returns a full mapping {strategy_name: [order_ids]}.
-        """
-        if strategy_name is not None:
-            strat = strategy_name or "default"
-            ids = sorted(self._strategy_pending.get(strat, ()))
-            return {strat: ids} if ids else {}
-        return {s: sorted(ids) for s, ids in self._strategy_pending.items() if ids}
+        if api_detail:
+            merged = self._merge_order_from_api(api_detail, strategy_name=strat)
+            # If the exchange immediately returns FILLED (common for MARKET),
+            # this order may never enter the polling loop (finished orders are not polled).
+            # Emit the update immediately so StrategyEngine holdings reflect reality.
+            if merged is not None and self.main_engine is not None:
+                try:
+                    if hasattr(self.main_engine, "strategy_engine"):
+                        self.main_engine.strategy_engine.on_order(merged)
+                    if hasattr(self.main_engine, "risk_engine"):
+                        self.main_engine.risk_engine.on_order(merged)
+                except Exception:
+                    pass
+        else:
+            data = OrderData(
+                order_id=oid,
+                symbol=str(symbol),
+                side=str(side or "").upper(),
+                quantity=float(quantity),
+                price=float(price),
+                status="NEW",
+                order_type=str(order_type or "LIMIT"),
+                filled_quantity=0.0,
+                filled_avg_price=0.0,
+                strategy_name=strat,
+            )
+            self._order_map[oid] = data
+            if strat not in self._strategy_pending:
+                self._strategy_pending[strat] = set()
+            self._strategy_pending[strat].add(oid)
 
     def get_pending_orders_by_symbol(self, strategy_name: str) -> dict[str, list[str]]:
         """
@@ -504,11 +632,13 @@ class GatewayEngine(BaseEngine):
         Result: {symbol: [order_id, ...], ...} — strategies can use this instead of tracking locally.
         """
         strat = strategy_name or "default"
+        pending = self._strategy_pending.get(strat, set())
         by_symbol: dict[str, list[str]] = {}
-        for oid, track in self._order_tracks.items():
-            if track.strategy_name != strat:
+        for oid in pending:
+            data = self._order_map.get(oid)
+            if data is None:
                 continue
-            sym = track.symbol
+            sym = data.symbol
             if sym not in by_symbol:
                 by_symbol[sym] = []
             by_symbol[sym].append(oid)
@@ -518,28 +648,26 @@ class GatewayEngine(BaseEngine):
 
     def _poll_orders_and_emit(self) -> None:
         """
-        Poll /v3/query_order for tracked orders and synchronously update engines.
-
-        To keep ordering intuitive for strategies, we directly call:
-        - strategy_engine.on_order(OrderData)
-        - risk_engine.on_order(OrderData)
-
-        instead of enqueueing EVENT_ORDER and waiting for the next tick.
+        Poll /v3/query_order for orders in _order_map that are not yet finished.
+        Update _order_map with latest data; emit on_order when changed.
         """
         me = self.main_engine
-        if not self._order_tracks or me is None:
+        to_poll = [oid for oid in self._order_map if any(oid in ids for ids in self._strategy_pending.values())]
+        if not to_poll or me is None:
             return
 
-        # Query calls only (place/cancel are NOT counted as "query").
-        self.log(f"query: /v3/query_order batch size={len(self._order_tracks)}", level="DEBUG", source="Gateway")
+        self.log(f"query: /v3/query_order batch size={len(to_poll)}", level="DEBUG", source="Gateway")
 
         finished: list[str] = []
-        for oid, track in list(self._order_tracks.items()):
+        for oid in to_poll:
+            data = self._order_map.get(oid)
+            if data is None:
+                continue
             body = self.query_order(order_id=oid)
             if not isinstance(body, dict):
                 self.log(
-                    f"WARN: order poll order_id={oid} symbol={track.symbol} returned non-dict | "
-                    f"strategy={track.strategy_name} | check _request_post logs for API error",
+                    f"WARN: order poll order_id={oid} symbol={data.symbol} returned non-dict | "
+                    f"strategy={data.strategy_name or '?'} | check _request_post logs for API error",
                     level="WARN",
                     source="Gateway",
                 )
@@ -548,8 +676,8 @@ class GatewayEngine(BaseEngine):
                 err_code = body.get("ErrorCode", body.get("Code", ""))
                 err_msg = body.get("ErrorMessage", body.get("Message", str(body)[:200]))
                 self.log(
-                    f"WARN: order poll order_id={oid} symbol={track.symbol} Success=False | "
-                    f"ErrorCode={err_code} ErrorMessage={err_msg} | strategy={track.strategy_name}",
+                    f"WARN: order poll order_id={oid} symbol={data.symbol} Success=False | "
+                    f"ErrorCode={err_code} ErrorMessage={err_msg} | strategy={data.strategy_name or '?'}",
                     level="WARN",
                     source="Gateway",
                 )
@@ -561,66 +689,80 @@ class GatewayEngine(BaseEngine):
                     detail = matched[0]
             if not isinstance(detail, dict):
                 continue
-            if not detail:
+
+            prev_filled = data.filled_quantity
+            prev_status = data.status
+            updated = self._merge_order_from_api(detail, strategy_name=data.strategy_name or "?")
+            if updated is None:
                 continue
-
-            status = str(detail.get("Status", "") or "").upper()
-            filled_qty = float(detail.get("FilledQuantity", 0.0) or 0.0)
-            filled_avg = float(detail.get("FilledAverPrice", 0.0) or 0.0)
-            qty = float(detail.get("Quantity", 0.0) or 0.0)
-            price = float(detail.get("Price", 0.0) or 0.0)
-
-            changed = (filled_qty != track.last_filled_qty) or (status != track.last_status)
+            status = (updated.status or "").upper()
+            changed = (updated.filled_quantity != prev_filled) or (status != (prev_status or "").upper())
             if changed:
-                track.last_filled_qty = filled_qty
-                track.last_status = status
-                data = OrderData(
-                    order_id=oid,
-                    symbol=track.symbol,
-                    side=track.side,
-                    quantity=qty,
-                    price=price,
-                    status=status or "UNKNOWN",
-                    filled_quantity=filled_qty,
-                    filled_avg_price=filled_avg,
-                    strategy_name=track.strategy_name,
-                    ts=None,
-                )
-                # Persist the latest order state (sqlite) if configured on the main engine.
-                if hasattr(me, "order_store") and me.order_store is not None:
+                # Only persist to SQLite when order is FILLED (not PENDING, PARTIALLY_FILLED, etc.)
+                if status == "FILLED" and hasattr(me, "order_store") and me.order_store is not None:
                     try:
-                        me.order_store.upsert(data, raw=detail if isinstance(detail, dict) else None)
+                        now = time.time()
+                        raw_json = None
+                        if detail:
+                            try:
+                                raw_json = json.dumps(detail, ensure_ascii=False)
+                            except Exception:
+                                pass
+                        conn = sqlite3.connect(me.order_store.db_path)
+                        try:
+                            conn.execute(
+                                """
+                                INSERT INTO orders (
+                                  order_id, strategy_name, symbol, side, status,
+                                  quantity, price, filled_quantity, filled_avg_price,
+                                  updated_ts, raw_json
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(order_id) DO UPDATE SET
+                                  strategy_name=excluded.strategy_name,
+                                  symbol=excluded.symbol,
+                                  side=excluded.side,
+                                  status=excluded.status,
+                                  quantity=excluded.quantity,
+                                  price=excluded.price,
+                                  filled_quantity=excluded.filled_quantity,
+                                  filled_avg_price=excluded.filled_avg_price,
+                                  updated_ts=excluded.updated_ts,
+                                  raw_json=COALESCE(excluded.raw_json, orders.raw_json);
+                                """,
+                                (
+                                    str(updated.order_id),
+                                    str(getattr(updated, "strategy_name", "") or ""),
+                                    str(updated.symbol),
+                                    str(updated.side),
+                                    str(updated.status),
+                                    float(updated.quantity or 0.0),
+                                    float(updated.price or 0.0),
+                                    float(updated.filled_quantity or 0.0),
+                                    float(updated.filled_avg_price or 0.0),
+                                    float(now),
+                                    raw_json,
+                                ),
+                            )
+                            conn.commit()
+                        finally:
+                            conn.close()
                     except Exception:
                         pass
-                # Synchronously update engines so strategies see up-to-date positions
                 if hasattr(me, "strategy_engine"):
-                    me.strategy_engine.on_order(data)
+                    me.strategy_engine.on_order(updated)
                 if hasattr(me, "risk_engine"):
-                    me.risk_engine.on_order(data)
+                    me.risk_engine.on_order(updated)
 
-            if status in ("FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
+            if status in _FINISHED_STATUSES:
                 finished.append(oid)
 
         for oid in finished:
-            track = self._order_tracks.pop(oid, None)
-            if track is not None:
-                strat = track.strategy_name or "default"
+            d = self._order_map.get(oid)
+            if d is not None:
+                strat = d.strategy_name or "default"
                 if strat in self._strategy_pending:
                     self._strategy_pending[strat].discard(oid)
-
-    # ---------------- event bridge ----------------
-
-    def put_bar(self, bar_data: BarData) -> None:
-        """Emit EVENT_BAR so the event engine routes to market engine."""
-        if self.main_engine:
-            self.main_engine.put_event(EVENT_BAR, bar_data)
+                if "?" in self._strategy_pending:
+                    self._strategy_pending["?"].discard(oid)
 
 
-@dataclass
-class _OrderTrack:
-    order_id: str
-    strategy_name: str
-    symbol: str
-    side: str
-    last_filled_qty: float = 0.0
-    last_status: str = ""

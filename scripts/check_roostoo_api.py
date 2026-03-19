@@ -8,20 +8,23 @@ Usage: python scripts/check_roostoo_api.py
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, root_dir)
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(os.path.join(root_dir, ".env"))
 
 from src.engines.engine_gateway import GatewayEngine
 
 
 def _main_mock():
+    """Mock main_engine matching engine usage (log_store, order_store)."""
     from unittest.mock import MagicMock
     m = MagicMock()
     m.write_log = lambda msg, level="INFO", source="System": print(f"[{level}] {msg}")
     m.log_store = None
+    m.order_store = None  # gateway skips persist when None
     return m
 
 
@@ -69,21 +72,23 @@ def main() -> int:
 
     # GET /v3/balance (signed)
     print("GET /v3/balance (signed)...")
-    r = gw.get_balance()
+    r = gw._fetch_balance()
     if r is None:
         print("  ERROR: failed (check API keys)\n")
         errors += 1
     else:
         print(f"  OK: {type(r).__name__}\n")
 
-    # GET /v3/pending_count (signed)
-    print("GET /v3/pending_count (signed)...")
-    r = gw.pending_count()
+    # POST /v3/query_order (signed, pending_only=TRUE) — replaces pending_count
+    print("POST /v3/query_order (signed, pending_only=TRUE)...")
+    r = gw.query_order(pending_only=True, limit=10)
     if r is None:
         print("  ERROR: failed (check API keys)\n")
         errors += 1
     else:
-        print(f"  OK: {type(r).__name__}\n")
+        matched = r.get("OrderMatched") if isinstance(r, dict) else None
+        n = len(matched) if isinstance(matched, list) else 0
+        print(f"  OK: {n} pending order(s)\n")
 
     # POST /v3/query_order (signed)
     print("POST /v3/query_order (signed, no order_id)...")
@@ -133,10 +138,11 @@ def main() -> int:
         limit_order_id = str(did) if did else None
         print(f"  OK: order_id={limit_order_id}\n" if limit_order_id else "  OK (no order_id)\n")
 
-    # Diagnose: pending_count + query_order before cancel
+    # Diagnose: query_order pending + query_order by id before cancel
     if limit_order_id:
-        pc = gw.pending_count()
-        print(f"  pending_count after limit: {pc}\n")
+        qo = gw.query_order(pending_only=True, limit=10)
+        n = len(qo.get("OrderMatched") or []) if isinstance(qo, dict) else 0
+        print(f"  pending orders after limit: {n}\n")
         qo = gw.query_order(order_id=limit_order_id)
         if isinstance(qo, dict):
             detail = qo.get("OrderDetail")

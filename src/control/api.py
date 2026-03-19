@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.engines.engine_strategy import AVAILABLE_STRATEGIES
 from src.control.engine_manager import EngineManager, Mode
+from src.control.order_store import OrderStore
+from src.engines.engine_strategy import AVAILABLE_STRATEGIES
 from src.strategies.template import StrategyTemplate
 
 
@@ -136,6 +136,15 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         # Cached snapshot only (UI must not trigger exchange calls).
         return {"orders": main_engine.gateway_engine.get_cached_orders_snapshot()}
 
+    @app.get("/account/pnl")
+    def account_pnl(_: None = Depends(_require_admin)):
+        """Current equity, PnL and PnL % from risk engine."""
+        main_engine = _eng()
+        risk = getattr(main_engine, "risk_engine", None)
+        if risk is None or not hasattr(risk, "get_current_pnl"):
+            return {"equity": 0.0, "init_balance": 0.0, "pnl": 0.0, "pnl_pct": 0.0}
+        return risk.get_current_pnl()
+
     # ------------------------------------------------------------------
     # Orders DB (SQLite)
     # ------------------------------------------------------------------
@@ -151,44 +160,12 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         Read orders from the local SQLite store (latest row per order_id).
         Works even when the engine is stopped.
         """
-        db_path = "data/orders/orders.db"
         try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            where: list[str] = []
-            params: list[object] = []
-            if strategy:
-                where.append("strategy_name = ?")
-                params.append(strategy)
-            if symbol:
-                where.append("symbol = ?")
-                params.append(symbol)
-            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-            lim = max(1, min(int(limit), 5000))
-            rows = conn.execute(
-                f"""
-                SELECT
-                  order_id, strategy_name, symbol, side, status,
-                  quantity, price, filled_quantity, filled_avg_price,
-                  updated_ts, raw_json
-                FROM orders_latest
-                {where_sql}
-                ORDER BY updated_ts DESC
-                LIMIT ?
-                """,
-                (*params, lim),
-            ).fetchall()
-            out: list[dict[str, Any]] = []
-            for r in rows:
-                out.append({k: r[k] for k in r.keys()})
-            return {"rows": out}
+            store = OrderStore()
+            rows = store.query(strategy=strategy, symbol=symbol, limit=limit)
+            return {"rows": rows}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
     @app.get("/strategies/running")
     def strategies_running():
@@ -209,7 +186,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
     @app.post("/strategies/start")
     def strategy_start(payload: dict[str, Any], _: None = Depends(_require_admin)):
         main_engine = _eng()
-        # Accept either {strategy, symbol} or {name}
+        # Accept either {name} (preferred) or legacy {strategy} (mapped to name).
         name = str(payload.get("name", "")).strip()
         if not name:
             strategy = str(payload.get("strategy", "")).strip()
@@ -219,11 +196,8 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
                     detail="payload must include either name or strategy",
                 )
             name = strategy
-            if main_engine.get_strategy(name) is None:
-                try:
-                    main_engine.add_strategy(strategy)
-                except Exception as e:
-                    raise HTTPException(status_code=500, detail=str(e))
+        if main_engine.get_strategy(name) is None:
+            raise HTTPException(status_code=404, detail=f"strategy not found: {name}")
         try:
             main_engine.start_strategy(name)
         except Exception as e:
@@ -238,33 +212,6 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
             raise HTTPException(status_code=400, detail="payload must include name")
         try:
             main_engine.stop_strategy(name)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        return {"ok": True, "name": name}
-
-    @app.post("/strategies/add")
-    def strategy_add(payload: dict[str, Any], _: None = Depends(_require_admin)):
-        main_engine = _eng()
-        strategy = str(payload.get("strategy", "")).strip()
-        if not strategy:
-            raise HTTPException(status_code=400, detail="payload must include strategy")
-        full_name = strategy
-        try:
-            if main_engine.get_strategy(full_name) is not None:
-                return {"ok": True, "name": full_name}
-            main_engine.add_strategy(strategy)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        return {"ok": True, "name": full_name}
-
-    @app.post("/strategies/delete")
-    def strategy_delete(payload: dict[str, Any], _: None = Depends(_require_admin)):
-        main_engine = _eng()
-        name = str(payload.get("name", "")).strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="payload must include name")
-        try:
-            main_engine.delete_strategy(name)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
         return {"ok": True, "name": name}

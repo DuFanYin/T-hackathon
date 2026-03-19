@@ -1,11 +1,11 @@
 """
-Tests for each strategy: Strat1Pine, Strat2Momentum, StratTestAlt.
+Tests for each strategy: strategy_JH, Strat2Momentum, StratTestAlt.
 """
 
 import pytest
 from unittest.mock import MagicMock
 
-from src.strategies.factory import Strat1Pine, Strat2Momentum, StratTestAlt
+from src.strategies.factory import StrategyJH, Strat2Momentum, StratTestAlt
 from src.strategies.factory.strat2_momentum import TRACKED_COINS
 
 
@@ -36,25 +36,19 @@ class TestStratTestAlt:
         assert strat.strategy_name == "StratTestAlt_Test"
         assert strat.symbol == "BTCUSDT"
         assert strat.quantity == 0.001
-        assert strat._cycle_limit == 3
-        assert strat._side_next == "BUY"
+        assert strat.stop_loss_pct == 0.01
+        assert strat.take_profit_pct == 0.02
 
     def test_construction_with_setting(self):
         main = _main_engine_mock()
         strat = StratTestAlt(
             main, "StratTestAlt_Test",
-            setting={"symbols": ["ETHUSDT"], "quantity": 0.01, "timer_trigger": 5},
+            setting={"quantity": 0.01, "timer_trigger": 5, "stop_loss_pct": 0.02, "take_profit_pct": 0.03},
         )
-        assert strat.symbol == "ETHUSDT"
+        assert strat.symbol == "BTCUSDT"  # BTC only
         assert strat.quantity == 0.01
-        assert strat._timer_trigger == 5
-
-    def test_order_attempts_property(self):
-        main = _main_engine_mock()
-        strat = StratTestAlt(main, "StratTestAlt_Test")
-        assert strat.order_attempts == 0
-        strat._order_attempts = 5
-        assert strat.order_attempts == 5
+        assert strat.stop_loss_pct == 0.02
+        assert strat.take_profit_pct == 0.03
 
     def test_on_init_on_start(self):
         main = _main_engine_mock()
@@ -67,72 +61,37 @@ class TestStratTestAlt:
     def test_on_timer_logic_sends_order(self):
         main = _main_engine_mock()
         main.market_engine.get_symbol.return_value = MagicMock(last_price=50000.0)
+        holding = MagicMock()
+        holding.positions = {}  # flat
+        main.strategy_engine.get_holding.return_value = holding
         strat = StratTestAlt(main, "StratTestAlt_Test", setting={"quantity": 0.001})
         strat.on_init()
         strat.on_start()
         strat.on_timer_logic()
         assert main.handle_intent.called
-        assert strat._order_attempts == 1
 
 
-class TestStrat1Pine:
-    """Tests for Strat1Pine."""
+class TestStrategyJH:
+    """Tests for strategy_JH (StrategyJH)."""
 
-    def test_construction_empty_market_symbols(self):
+    def test_construction_defaults(self):
         main = _main_engine_mock()
-        main.market_engine.get_cached_symbols.return_value = []
-        strat = Strat1Pine(main, "Strat1Pine_Test", setting={})
-        assert strat.symbols == []
-        assert strat.pivot_len == 3
-        assert strat.rr == 2.0
-        assert strat.use_limit is True
-        assert strat.quantity == 1.0
+        strat = StrategyJH(main, "strategy_JH_Test", setting={})
+        assert strat.strategy_name == "strategy_JH_Test"
+        assert "BTCUSDT" in strat.symbols
+        assert strat.lookback_candles == 576
+        assert strat.top_n == 1
+        assert strat.rebalance_every == 288
+        assert strat.trailing_stop_pct == 8.0
+        assert strat.min_hold_candles == 288
+        assert strat.min_momentum_pct == 3.0
 
-    def test_construction_with_cached_symbols(self):
+    def test_history_requirements(self):
         main = _main_engine_mock()
-        main.market_engine.get_cached_symbols.return_value = ["BTCUSDT", "ETHUSDT"]
-        strat = Strat1Pine(main, "Strat1Pine_Test", setting={})
-        assert strat.symbols == ["BTCUSDT", "ETHUSDT"]
-
-    def test_construction_with_setting_overrides(self):
-        main = _main_engine_mock()
-        main.market_engine.get_cached_symbols.return_value = ["BTCUSDT"]
-        strat = Strat1Pine(
-            main, "Strat1Pine_Test",
-            setting={"pivot_len": 5, "rr": 3.0, "use_limit": False, "quantity": 0.5},
-        )
-        assert strat.pivot_len == 5
-        assert strat.rr == 3.0
-        assert strat.use_limit is False
-        assert strat.quantity == 0.5
-
-    def test_get_state_returns_default(self):
-        main = _main_engine_mock()
-        main.market_engine.get_cached_symbols.return_value = ["BTCUSDT"]
-        strat = Strat1Pine(main, "Strat1Pine_Test")
-        st = strat._get_state("BTCUSDT")
-        assert st["sup_price"] is None
-        assert st["hit_count"] == 0
-        assert st["active_stop"] is None
-        assert st["active_target"] is None
-
-    def test_on_init_logic(self):
-        main = _main_engine_mock()
-        main.market_engine.get_cached_symbols.return_value = ["BTCUSDT"]
-        strat = Strat1Pine(main, "Strat1Pine_Test")
-        strat.on_init_logic()
-        assert main.put_event.called
-
-    def test_on_timer_logic_no_bars_returns_early(self):
-        main = _main_engine_mock()
-        main.market_engine.get_cached_symbols.return_value = ["BTCUSDT"]
-        main.market_engine.get_last_bars.return_value = []
-        main.market_engine.get_bar_count.return_value = 0
-        strat = Strat1Pine(main, "Strat1Pine_Test")
-        strat.on_init()
-        strat.on_start()
-        strat.on_timer_logic()
-        main.market_engine.get_last_bars.assert_called()
+        strat = StrategyJH(main, "strategy_JH_Test")
+        reqs = strat.history_requirements()
+        assert len(reqs) >= 1
+        assert any(r.get("symbol") == "BTCUSDT" for r in reqs)
 
 
 class TestStrat2Momentum:

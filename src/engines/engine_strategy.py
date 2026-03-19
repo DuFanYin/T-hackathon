@@ -14,10 +14,10 @@ if TYPE_CHECKING:
     from src.strategies.template import StrategyTemplate
 
 # Hard-coded available strategies: name -> class. Add new strategy classes here.
-from src.strategies.factory import Strat1Pine, Strat2Momentum, StratTestAlt
+from src.strategies.factory import StrategyJH, Strat2Momentum, StratTestAlt
 
 AVAILABLE_STRATEGIES: Dict[str, Type] = {
-    "Strat1Pine": Strat1Pine,
+    "strategy_JH": StrategyJH,
     "Strat2Momentum": Strat2Momentum,
     "StratTestAlt": StratTestAlt,
 }
@@ -97,12 +97,6 @@ class StrategyEngine(BaseEngine):
                 raise ValueError(f"Strategy has open positions; close positions before stop: {strategy_name}")
         s.on_stop()
 
-    def remove_strategy(self, strategy_name: str) -> None:
-        """Remove a strategy instance from the registry (if present)."""
-        self._strategies = [
-            s for s in self._strategies if getattr(s, "strategy_name", None) != strategy_name
-        ]
-
     # ------------------------------------------------------------------
     # Holdings API (merged from PositionEngine)
     # ------------------------------------------------------------------
@@ -111,10 +105,6 @@ class StrategyEngine(BaseEngine):
         if strategy_name not in self._holdings:
             self._holdings[strategy_name] = StrategyHolding()
         return self._holdings[strategy_name]
-
-    def remove_strategy_holding(self, strategy_name: str) -> None:
-        self._holdings.pop(strategy_name, None)
-        # Keep order tracks; strategies may still have live orders even if removed.
 
     def _apply_order_fill_to_holdings(self, data: OrderData) -> None:
         strategy_name = data.strategy_name or "default"

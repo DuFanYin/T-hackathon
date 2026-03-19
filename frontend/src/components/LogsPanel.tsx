@@ -114,10 +114,10 @@ export const LogsPanel: FC<LogsPanelProps> = ({
         {timestamp && (
           <span className="shrink-0 font-mono text-emerald-300">{timestamp}</span>
         )}
-        <span className={`shrink-0 w-12 font-mono text-[10px] uppercase ${colorClass}`}>
+        <span className={`shrink-0 w-12 font-mono text-xs uppercase ${colorClass}`}>
           {level}
         </span>
-        <span className="shrink-0 max-w-[140px] truncate font-mono text-[10px] text-cyan-300/90" title={source}>
+        <span className="shrink-0 max-w-[140px] truncate font-mono text-xs text-cyan-300/90" title={source}>
           {source}
         </span>
         <span className={`flex-1 min-w-0 ${colorClass}`}>{msg}</span>
@@ -142,20 +142,24 @@ export const LogsPanel: FC<LogsPanelProps> = ({
         >
           Clear
         </button>
-        <span className="ml-2 text-[11px] text-white/50">Level:</span>
-        <select
-          value={levelFilter}
-          onChange={(e) => setLevelFilter(e.target.value as LogLevel | 'ALL')}
-          className="rounded-lg border border-white/20 bg-black/40 px-2 py-1.5 text-xs text-slate-100 focus:border-white/40 focus:outline-none"
-        >
-          <option value="ALL">All</option>
-          {LOG_LEVELS.map((lvl) => (
-            <option key={lvl} value={lvl}>
+        <span className="ml-2 text-xs text-white/50">Level:</span>
+        <div className="flex gap-1">
+          {(['ALL', ...LOG_LEVELS] as const).map((lvl) => (
+            <button
+              key={lvl}
+              type="button"
+              onClick={() => setLevelFilter(lvl)}
+              className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition focus:outline-none ${
+                levelFilter === lvl
+                  ? 'border-white/40 bg-white/20 text-slate-50'
+                  : 'border-white/20 bg-black/40 text-slate-300 hover:border-white/30 hover:bg-white/5'
+              }`}
+            >
               {lvl}
-            </option>
+            </button>
           ))}
-        </select>
-        <span className="ml-2 text-[11px] text-white/50">Strategy:</span>
+        </div>
+        <span className="ml-2 text-xs text-white/50">Source:</span>
         <select
           value={sourceFilter}
           onChange={(e) => setSourceFilter(e.target.value)}

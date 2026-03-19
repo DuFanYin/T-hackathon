@@ -18,7 +18,7 @@ body {
 }
 
 .brand {
-  @apply mb-2 text-base font-semibold tracking-wide;
+  @apply mb-2 text-sm font-semibold tracking-wide;
 }
 
 .meta {
@@ -50,7 +50,7 @@ body {
 }
 
 .header-title {
-  @apply m-0 text-base font-medium text-slate-50;
+  @apply m-0 text-sm font-medium text-slate-50;
 }
 
 .pill {
@@ -112,7 +112,7 @@ body {
 
 .table th,
 .table td {
-  @apply border-b border-white/10 px-2 py-2 text-[13px];
+  @apply border-b border-white/10 px-2 py-2 text-sm;
 }
 
 .table th {
@@ -140,7 +140,7 @@ body {
 }
 
 .mono {
-  @apply text-[12px] tracking-tight;
+  @apply text-xs tracking-tight;
 }
 
 .logs {

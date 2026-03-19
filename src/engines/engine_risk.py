@@ -3,14 +3,12 @@ Risk engine: receives order and timer events; can emit EVENT_RISK_ALERT.
 Checks drawdown vs ATR-based limit; on breach, closes positions and stops strategies one by one.
 """
 
-import os
 from typing import Any
 
 from src.utilities.base_engine import BaseEngine
 
-# Account initial balance (USD) — only constant; override via env RISK_ACCOUNT_INIT_BALANCE
-ACCOUNT_INIT_BALANCE: float = float(os.getenv("RISK_ACCOUNT_INIT_BALANCE", "0.0"))
-
+# Account initial balance (USD) for PnL and drawdown
+ACCOUNT_INIT_BALANCE = 50000
 # Hard-coded risk config
 RISK_CONFIG = {
     "max_drawdown_pct": 10.0,
@@ -32,8 +30,8 @@ def _parse_equity_usd(bal: dict[str, Any] | None) -> float:
     for asset, entry in wallet.items():
         if not isinstance(entry, dict):
             continue
-        free = float(entry.get("Free", 0) or 0)
-        lock = float(entry.get("Lock", 0) or 0)
+        free = float(entry.get("Free") or entry.get("free") or 0)
+        lock = float(entry.get("Lock") or entry.get("lock") or 0)
         if str(asset).upper() in ("USD", "USDT", "BUSD"):
             total += free + lock
     return total
@@ -158,6 +156,30 @@ class RiskEngine(BaseEngine):
                 source="Risk",
             )
             self._close_and_stop_all()
+
+    def get_current_pnl(self) -> dict[str, float]:
+        """
+        Compute current equity, PnL and PnL % for frontend display.
+        Returns: { equity, init_balance, pnl, pnl_pct }
+        """
+        me = self.main_engine
+        if me is None:
+            return {"equity": 0.0, "init_balance": 0.0, "pnl": 0.0, "pnl_pct": 0.0}
+        gateway = getattr(me, "gateway_engine", None)
+        if gateway is None or not hasattr(gateway, "get_cached_balance"):
+            return {"equity": 0.0, "init_balance": self.account_init_balance, "pnl": 0.0, "pnl_pct": 0.0}
+        bal = gateway.get_cached_balance()
+        equity = _parse_equity_usd(bal)
+        if self.account_init_balance <= 0 and equity > 0 and not self._init_snapped:
+            self.account_init_balance = equity
+            self._init_snapped = True
+            self.log(f"Risk: snapped init balance = {equity:.0f} (from get_current_pnl)", level="INFO", source="Risk")
+        init = self.account_init_balance
+        if init <= 0:
+            return {"equity": equity, "init_balance": init, "pnl": 0.0, "pnl_pct": 0.0}
+        pnl = equity - init
+        pnl_pct = (pnl / init) * 100.0
+        return {"equity": equity, "init_balance": init, "pnl": pnl, "pnl_pct": pnl_pct}
 
     def _close_and_stop_all(self) -> None:
         """Check positions per strategy; close then stop one by one. Retries each tick until all stopped."""

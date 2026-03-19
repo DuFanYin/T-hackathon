@@ -140,15 +140,14 @@ class EventEngine(BaseEngine):
         data = event.data
         msg = getattr(data, "msg", None) or str(data)
         level = getattr(data, "level", "INFO") if data is not None else "INFO"
-        source = getattr(data, "source", None) if data is not None else None
-        # Fan out to control-plane log store if present.
+        source = getattr(data, "source", None) or "System" if data is not None else "System"
         try:
             me = self.main_engine
-            if me is not None and hasattr(me, "log_store") and me.log_store is not None:
-                me.log_store.append(msg, level=level, source=source)
+            if me is not None and hasattr(me, "write_log"):
+                me.write_log(msg, level=level, source=source)
         except Exception:
             pass
-        print(f"[{level}] {msg}")
+        print(f"[{level}] {source} | {msg}")
 
     def _handle_risk_alert(self, event: Event) -> None:
         msg = getattr(event.data, "msg", None) or str(event.data)
@@ -196,13 +195,18 @@ class EventEngine(BaseEngine):
 
                 if order_id is not None:
                     oid = str(order_id)
-                    if getattr(data, "strategy_name", None):
-                        me.gateway_engine.register_order(
-                            strategy_name=str(data.strategy_name),
-                            order_id=oid,
-                            symbol=str(data.symbol),
-                            side=str(data.side),
-                        )
+                    strat = getattr(data, "strategy_name", None) or "default"
+                    api_detail = resp.get("OrderDetail") if isinstance(resp, dict) else None
+                    me.gateway_engine.register_order(
+                        strategy_name=str(strat),
+                        order_id=oid,
+                        symbol=str(data.symbol),
+                        side=str(data.side),
+                        quantity=float(data.quantity),
+                        price=float(data.price) if data.price is not None else 0.0,
+                        order_type=str(data.order_type or "LIMIT"),
+                        api_detail=api_detail,
+                    )
                     return oid
                 return None
             return None

@@ -41,12 +41,11 @@ class TestStrategyEngine:
         assert strat.strategy_name == "StratTestAlt"
         assert engine.get_strategy("StratTestAlt") is strat
 
-    def test_add_strategy_strat1_pine(self, main_engine_mock):
-        main_engine_mock.market_engine.get_cached_symbols.return_value = ["BTCUSDT"]
+    def test_add_strategy_strategy_jh(self, main_engine_mock):
         engine = StrategyEngine(main_engine=main_engine_mock)
-        strat = engine.add_strategy_by_name("Strat1Pine")
-        assert strat.strategy_name == "Strat1Pine"
-        assert strat.symbols == ["BTCUSDT"]
+        strat = engine.add_strategy_by_name("strategy_JH")
+        assert strat.strategy_name == "strategy_JH"
+        assert "BTCUSDT" in strat.symbols
 
     def test_add_strategy_strat2_momentum(self, main_engine_mock):
         engine = StrategyEngine(main_engine=main_engine_mock)
@@ -90,6 +89,6 @@ class TestAvailableStrategies:
     """Tests for AVAILABLE_STRATEGIES registry."""
 
     def test_contains_expected_strategies(self):
-        assert "Strat1Pine" in AVAILABLE_STRATEGIES
+        assert "strategy_JH" in AVAILABLE_STRATEGIES
         assert "Strat2Momentum" in AVAILABLE_STRATEGIES
         assert "StratTestAlt" in AVAILABLE_STRATEGIES

@@ -17,13 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def main() -> int:
     print("=== T-hackathon Smoke Test ===\n")
-    pair = "BTCUSDT"
 
     # 1. Imports
-    print("1. Importing MainEngine and Strat2Momentum...")
+    print("1. Importing MainEngine and strategies...")
     try:
         from src.engines.engine_main import MainEngine
-        from src.strategies.factory import Strat1Pine, Strat2Momentum
         from src.engines.engine_strategy import AVAILABLE_STRATEGIES
     except Exception as e:
         print(f"   FAIL: Import error: {e}")
@@ -34,6 +32,9 @@ def main() -> int:
     print("2. Checking AVAILABLE_STRATEGIES...")
     if "Strat2Momentum" not in AVAILABLE_STRATEGIES:
         print("   FAIL: Strat2Momentum not in AVAILABLE_STRATEGIES")
+        return 1
+    if "strategy_JH" not in AVAILABLE_STRATEGIES:
+        print("   FAIL: strategy_JH not in AVAILABLE_STRATEGIES")
         return 1
     print(f"   OK: {list(AVAILABLE_STRATEGIES.keys())}\n")
 
@@ -46,10 +47,18 @@ def main() -> int:
         return 1
     print("   OK\n")
 
-    # 4. Add Strat2Momentum
-    print(f"4. Adding Strat2Momentum ({pair})...")
+    # 4. Add strategies
+    print("4. Adding Strat2Momentum...")
     try:
-        main.add_strategy("Strat2Momentum", pair)
+        main.add_strategy("Strat2Momentum")
+    except Exception as e:
+        print(f"   FAIL: {e}")
+        return 1
+    print("   OK\n")
+
+    print("4b. Adding strategy_JH...")
+    try:
+        main.add_strategy("strategy_JH")
     except Exception as e:
         print(f"   FAIL: {e}")
         return 1
@@ -57,7 +66,7 @@ def main() -> int:
 
     # 5. Get strategy and verify
     print("5. Verifying strategy instance...")
-    strat = main.get_strategy(f"Strat2Momentum_{pair}")
+    strat = main.get_strategy("Strat2Momentum")
     if strat is None:
         print("   FAIL: Strategy not found")
         return 1
@@ -69,7 +78,8 @@ def main() -> int:
     # 6. Init and start strategy
     print("6. Initializing and starting strategy...")
     try:
-        main.start_strategy(f"Strat2Momentum_{pair}")
+        main.start_strategy("Strat2Momentum")
+        main.start_strategy("strategy_JH")
     except Exception as e:
         print(f"   FAIL: {e}")
         return 1
@@ -83,7 +93,8 @@ def main() -> int:
     # 8. Stop strategy and disconnect
     print("\n8. Stopping strategy and disconnecting...")
     try:
-        main.stop_strategy(f"Strat2Momentum_{pair}")
+        main.stop_strategy("Strat2Momentum")
+        main.stop_strategy("strategy_JH")
         main.disconnect()
     except Exception as e:
         print(f"   FAIL: {e}")

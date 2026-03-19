@@ -1,6 +1,8 @@
 import { useEffect, useState, type FC } from 'react';
+import { api } from '../lib/api';
+import type { Holding, RunningStrategy } from '../lib/types';
 
-export type Tab = 'Strategies' | 'Account' | 'Orders' | 'Logs';
+export type Tab = 'Strategies' | 'Logs';
 
 interface SidebarProps {
   tab: Tab;
@@ -10,11 +12,10 @@ interface SidebarProps {
   engineMode: string | null;
   systemRunning: boolean;
   isAuthed: boolean;
-  onLogin: (token: string) => Promise<boolean>;
-  onLogout: () => void;
-  onStartMock: () => void;
-  onStartLive: () => void;
-  onStopSystem: () => void | Promise<void>;
+  holdings: Record<string, Holding>;
+  running: RunningStrategy[];
+  onAuthToken: (token: string | null) => void;
+  onRefresh: () => Promise<void>;
 }
 
 export const Sidebar: FC<SidebarProps> = ({
@@ -25,13 +26,12 @@ export const Sidebar: FC<SidebarProps> = ({
   engineMode,
   systemRunning,
   isAuthed,
-  onLogin,
-  onLogout,
-  onStartMock,
-  onStartLive,
-  onStopSystem,
+  holdings,
+  running,
+  onAuthToken,
+  onRefresh,
 }) => {
-  const tabs: Tab[] = ['Strategies', 'Account', 'Orders', 'Logs'];
+  const tabs: Tab[] = ['Strategies', 'Logs'];
   const [now, setNow] = useState<Date>(() => new Date());
 
   useEffect(() => {
@@ -50,19 +50,19 @@ export const Sidebar: FC<SidebarProps> = ({
   return (
     <aside className="flex h-screen flex-col justify-between border-r border-white/10 bg-black/40 px-4 py-5">
       <div>
-        <div className="mb-3 text-sm font-semibold tracking-wide text-slate-100">
-          T-hackathon
+        <div className="mb-3">
+          <div className="text-sm font-semibold tracking-wide text-slate-100">SMUvengers</div>
         </div>
         <div className="mb-4 space-y-1 text-xs text-white/75">
           <div className="truncate">
             <span className="text-white/60">API</span>{' '}
-            <span className="font-mono text-[11px] text-slate-200">{apiBase}</span>
+            <span className="font-mono text-xs text-slate-200">{apiBase}</span>
           </div>
           <div className="flex items-center justify-between gap-2">
             <span className="text-white/60">Backend</span>
             <span
               className={[
-                'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]',
+                'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs',
                 backendOk
                   ? 'border-emerald-400/80 text-emerald-200'
                   : 'border-rose-400/80 text-rose-200',
@@ -81,7 +81,7 @@ export const Sidebar: FC<SidebarProps> = ({
             <span className="text-white/60">Engine</span>
             <span
               className={[
-                'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]',
+                'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs',
                 systemRunning
                   ? 'border-emerald-400/80 text-emerald-200'
                   : 'border-rose-400/80 text-rose-200',
@@ -97,7 +97,7 @@ export const Sidebar: FC<SidebarProps> = ({
             </span>
           </div>
         </div>
-        <div className="mb-4 space-y-2 text-[11px] text-white/70">
+        <div className="mb-4 space-y-2 text-xs text-white/70">
           <div className="font-mono uppercase tracking-wide">Authentication</div>
           {!isAuthed ? (
             <form
@@ -106,7 +106,13 @@ export const Sidebar: FC<SidebarProps> = ({
                 e.preventDefault();
                 const fd = new FormData(e.currentTarget);
                 const token = String(fd.get('admin_token') || '').trim();
-                if (token) await onLogin(token);
+                if (!token) return
+                const ok = await api.checkAdmin(token)
+                if (ok) {
+                  onAuthToken(token)
+                } else {
+                  window.alert('Invalid admin token')
+                }
               }}
             >
               <input
@@ -120,53 +126,92 @@ export const Sidebar: FC<SidebarProps> = ({
                 type="password"
                 autoComplete="new-password"
                 placeholder="Admin token"
-                className="rounded-lg border border-white/20 bg-black/40 px-2 py-1.5 text-[11px] text-slate-50 outline-none ring-0 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40"
+                className="rounded-lg border border-white/20 bg-black/40 px-2 py-1.5 text-xs text-slate-50 outline-none ring-0 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40"
               />
               <button
                 type="submit"
-                className="inline-flex items-center justify-center rounded-lg border border-white/20 bg-white/10 px-2 py-1.5 text-[11px] font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/20"
+                className="inline-flex items-center justify-center rounded-lg border border-white/20 bg-white/10 px-2 py-1.5 text-xs font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/20"
               >
                 Login
               </button>
             </form>
           ) : (
             <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/80 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/80 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-100">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Logged in
               </span>
               <button
                 type="button"
-                className="rounded-lg border border-white/20 bg-white/5 px-2 py-1 text-[11px] text-slate-100 hover:border-white/40 hover:bg-white/15"
-                onClick={onLogout}
+                className="rounded-lg border border-white/20 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:border-white/40 hover:bg-white/15"
+                onClick={() => onAuthToken(null)}
               >
                 Logout
               </button>
             </div>
           )}
         </div>
-        <div className="mb-4 space-y-2 text-[11px] text-white/70">
+        <div className="mb-4 space-y-2 text-xs text-white/70">
           <div className="font-mono uppercase tracking-wide">Engine controls</div>
           <div className="flex flex-wrap gap-1.5">
             <button
-              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/20 bg-white/5 px-2 py-1.5 text-[11px] font-medium text-slate-50 transition hover:border-emerald-400/80 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/20 bg-white/5 px-2 py-1.5 text-xs font-medium text-slate-50 transition hover:border-emerald-400/80 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!isAuthed || systemRunning}
-              onClick={onStartMock}
+              onClick={() => {
+                api.systemStart('mock').then(() => onRefresh()).catch(() => {})
+              }}
             >
               Mock
             </button>
             <button
-              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/20 bg-white/5 px-2 py-1.5 text-[11px] font-medium text-slate-50 transition hover:border-emerald-400/80 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/20 bg-white/5 px-2 py-1.5 text-xs font-medium text-slate-50 transition hover:border-emerald-400/80 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!isAuthed || systemRunning}
-              onClick={onStartLive}
+              onClick={() => {
+                api.systemStart('real').then(() => onRefresh()).catch(() => {})
+              }}
             >
               Live
             </button>
             <button
-              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-rose-400/80 bg-rose-500/10 px-2 py-1.5 text-[11px] font-medium text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-rose-400/80 bg-rose-500/10 px-2 py-1.5 text-xs font-medium text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!isAuthed || !systemRunning}
               onClick={() => {
-                void onStopSystem();
+                void (async () => {
+                  const anyOpen = Object.values(holdings || {}).some((holding) => {
+                    const positionRows = Object.values(holding?.positions || {})
+                    return positionRows.some((position) => (position?.quantity || 0) !== 0)
+                  })
+                  const anyStarted = running.some((s) => s.started)
+
+                  if (anyOpen) {
+                    window.alert('You must close positions before stopping strategies (use “Close pos” / “Close all”).')
+                    return
+                  }
+                  if (anyStarted) {
+                    window.alert('You must stop all strategies before stopping the engine.')
+                    return
+                  }
+
+                  const token =
+                    window.prompt(
+                      'This is a dangerous action.\n\nEnter admin code to proceed:',
+                    ) || ''
+                  const trimmed = token.trim()
+                  if (!trimmed) return
+                  const ok = await api.checkAdmin(trimmed)
+                  if (!ok) {
+                    window.alert('Invalid admin token')
+                    return
+                  }
+                  onAuthToken(trimmed)
+                  try {
+                    await api.systemStop()
+                    await onRefresh()
+                  } catch (e: unknown) {
+                    const msg = e instanceof Error ? e.message : String(e)
+                    window.alert(msg)
+                  }
+                })()
               }}
             >
               Stop
@@ -194,7 +239,7 @@ export const Sidebar: FC<SidebarProps> = ({
           })}
         </nav>
       </div>
-      <div className="mt-6 border-t border-white/10 pt-3 text-[11px]">
+      <div className="mt-6 border-t border-white/10 pt-3 text-xs">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="font-mono uppercase tracking-wide text-white/40">Mode</div>
@@ -202,7 +247,7 @@ export const Sidebar: FC<SidebarProps> = ({
               {!backendOk ? 'Backend down' : systemRunning ? 'Engine running' : 'Engine stopped'}
             </div>
           </div>
-          <div className="select-none font-mono text-[12px] tracking-wide text-emerald-300">
+          <div className="select-none font-mono text-xs tracking-wide text-emerald-300">
             {clockText}
           </div>
         </div>

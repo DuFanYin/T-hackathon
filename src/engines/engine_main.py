@@ -7,14 +7,13 @@ from __future__ import annotations
 import os
 import threading
 from logging.handlers import RotatingFileHandler
-
 from typing import Optional
 
 from .engine_event import Event, EventEngine
 from .engine_gateway import GatewayEngine
 from .engine_market import MarketEngine
 from .engine_risk import RiskEngine
-from .engine_strategy import StrategyEngine
+from .engine_strategy import AVAILABLE_STRATEGIES, StrategyEngine
 from src.control.log_store import LogStore
 from src.control.order_store import OrderStore
 
@@ -75,13 +74,22 @@ class MainEngine:
             # Discovery failure should not stop the engine; market data will be limited.
             self.write_log(f"init: exchangeInfo discovery failed: {e}", level="ERROR", source="System")
 
+        # Create instances for all known strategies on system init.
+        # Place this AFTER market symbol buffers are seeded so strategies that derive symbol lists
+        # from MarketEngine cache don't start with an empty symbol universe.
+        for strat_name in sorted(list(AVAILABLE_STRATEGIES.keys())):
+            try:
+                self.add_strategy(strat_name)
+            except Exception as e:
+                self.write_log(f"init: failed to create strategy {strat_name}: {e}", level="ERROR", source="System")
+
         self.event_engine.start()
         self.write_log("init: event engine started", level="INFO", source="System")
 
         # Warm cached account snapshots immediately (do not wait for timer throttle).
         # This keeps `/account/*` useful right after startup.
         try:
-            self.write_log("init: warming account cache (/v3/balance, /v3/pending_count)", level="INFO", source="System")
+            self.write_log("init: warming account cache (/v3/balance, query_order pending)", level="INFO", source="System")
             self.gateway_engine._refresh_account_cache(force=True)
         except Exception:
             pass
@@ -93,7 +101,7 @@ class MainEngine:
         self.strategy_engine.add_strategy_by_name(strategy_name)
 
     def get_strategy(self, strategy_name: str):
-        """Return the strategy instance with the given name (e.g. Strat1Pine_BTCUSDT), or None."""
+        """Return the strategy instance with the given name, or None."""
         return self.strategy_engine.get_strategy(strategy_name)
 
     def start_strategy(self, strategy_name: str) -> None:
@@ -103,23 +111,6 @@ class MainEngine:
     def stop_strategy(self, strategy_name: str) -> None:
         """Stop the strategy (independent stop control). Strategy must be flat."""
         self.strategy_engine.stop_strategy(strategy_name)
-
-    def delete_strategy(self, strategy_name: str) -> None:
-        """
-        Remove a strategy instance and its holdings.
-
-        - Calls stop_strategy (if present)
-        - Removes from StrategyEngine registry
-        - Clears StrategyEngine holdings for this strategy
-        """
-        if self.strategy_engine.get_strategy(strategy_name) is not None:
-            try:
-                self.stop_strategy(strategy_name)
-            except Exception:
-                # Stop errors should not prevent deletion.
-                pass
-        self.strategy_engine.remove_strategy(strategy_name)
-        self.strategy_engine.remove_strategy_holding(strategy_name)
 
     # ------------------------------------------------------------------
     # Gateway Public API façade (Roostoo v3)

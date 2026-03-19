@@ -185,6 +185,49 @@ class StrategyTemplate:
             return {}
         return self._main.get_pending_orders_by_symbol(self.strategy_name)
 
+    def open_position(
+        self,
+        symbol: str,
+        quantity: float,
+        price: float | None = None,
+        order_type: str = "MARKET",
+    ) -> str | None:
+        """
+        Open a long position (BUY). Prefer this over send_order for clarity.
+        - order_type: MARKET (immediate) or LIMIT
+        - price: required for LIMIT; for MARKET, pass 0 or None
+        """
+        if order_type.upper() == "LIMIT" and price is None:
+            sym_data = self.get_symbol(symbol)
+            price = getattr(sym_data, "last_price", 0.0) or 0.0
+        return self.send_order(symbol, "BUY", quantity, price or 0.0, order_type)
+
+    def close_position(
+        self,
+        symbol: str,
+        quantity: float | None = None,
+        price: float | None = None,
+        order_type: str = "MARKET",
+    ) -> str | None:
+        """
+        Close a long position (SELL). Prefer this over send_order for clarity.
+        - quantity: if None, closes full position from strategy holdings
+        - order_type: MARKET (immediate) or LIMIT
+        - price: required for LIMIT; for MARKET, pass 0 or None
+        """
+        if quantity is None:
+            if not hasattr(self._main, "strategy_engine") or self._main.strategy_engine is None:
+                return None
+            holding = self._main.strategy_engine.get_holding(self.strategy_name)
+            pos = holding.positions.get(symbol)
+            quantity = pos.quantity if pos else 0.0
+        if quantity <= 0:
+            return None
+        if order_type.upper() == "LIMIT" and price is None:
+            sym_data = self.get_symbol(symbol)
+            price = getattr(sym_data, "last_price", 0.0) or 0.0
+        return self.send_order(symbol, "SELL", quantity, price or 0.0, order_type)
+
     def set_error(self, msg: str = "") -> None:
         self._error = True
         self._error_msg = msg
@@ -201,11 +244,7 @@ class StrategyTemplate:
                 continue
             if pos.quantity < 0:
                 raise ValueError(f"Position quantity must be >= 0 (no short allowed): {symbol} = {pos.quantity}")
-            price = 0.0
-            sym_data = self.get_symbol(symbol)
-            if sym_data is not None:
-                price = getattr(sym_data, "last_price", 0.0) or 0.0
-            self.send_order(symbol, "SELL", pos.quantity, price, "MARKET")
+            self.close_position(symbol, pos.quantity, order_type="MARKET")
             self.write_log(f"clear_all_positions: SELL {pos.quantity} {symbol}")
 
     # ---------- state ----------

@@ -1,5 +1,276 @@
 # T-hackathon Architecture (current)
 
+This document describes the **current** architecture implemented in this repository: a single-process Python trading system with a FastAPI control plane and a React (Vite) operator dashboard. The dashboard is **poll-based** (no WebSockets/SSE).
+
+## Repository layout
+
+- `api_server.py`: starts FastAPI (Uvicorn) and owns engine lifetime via `EngineManager`.
+- `src/control/`: HTTP API (`api.py`), engine lifecycle (`engine_manager.py`), persistence helpers (`order_store.py`, `log_store.py`).
+- `src/engines/`: composition root (`engine_main.py`) + engines (`engine_event.py`, `engine_gateway.py`, `engine_market.py`, `engine_strategy.py`, `engine_risk.py`).
+- `src/strategies/`: strategy base + implementations (`template.py`, `factory/*.py`).
+- `src/utilities/`: shared models/constants (`object.py`, `events.py`, `intents.py`, etc.).
+- `frontend/`: React + TypeScript + Vite dashboard (`frontend/src/`).
+- `data/`:
+  - `data/orders/orders.db`: SQLite order persistence (filled orders)
+  - `data/logs/system.log`: rotating disk logs
+- `scripts/`: standalone utilities (not part of the running service).
+
+## System overview
+
+The system is split into:
+
+- **Control plane (FastAPI)**: starts/stops the engine and exposes snapshots (strategies, holdings, account cache, orders DB, logs tail).
+- **Engine (in-process)**: event-driven engines running inside the same Python process (threads).
+- **Dashboard (React SPA)**: operator UI calling the control API and polling snapshots.
+
+High-level runtime diagram:
+
+```text
+                         HTTP (fetch/poll)                 start/stop
+┌───────────────────────────────┐    ┌───────────────────────────────────────────┐
+│ React Dashboard (Vite)        │    │ FastAPI Control Plane                     │
+│ frontend/                     │───▶│ src/control/api.py                        │
+│ - Strategies/Account/Orders   │    │ - CORS + optional x-admin-token auth      │
+│ - Logs (tail polling)         │    │ - Snapshots + lifecycle calls             │
+└───────────────────────────────┘    └───────────────┬───────────────────────────┘
+                                                      owns lifetime via
+                                           ┌───────────────────────────────────┐
+                                           │ EngineManager                     │
+                                           │ src/control/engine_manager.py     │
+                                           └─────────────────┬─────────────────┘
+                                                             │ creates/stops
+                                           ┌─────────────────▼─────────────────┐
+                                           │ MainEngine                        │
+                                           │ src/engines/engine_main.py        │
+                                           │ (composition root)                │
+                                           └───┬───────────┬───────────────┬───┘
+                                               │           │               │
+                                     ┌─────────▼───┐  ┌────▼─────────┐ ┌───▼───────────┐
+                                     │ EventEngine │  │ MarketEngine │ │ GatewayEngine │
+                                     │ timer+queue │  │ Binance      │ │ Roostoo REST  │
+                                     └──────┬──────┘  └──────┬───────┘ └───────┬───────┘
+                                            │                │                 │ poll+persist
+                                            │                │                 │
+                                     ┌──────▼─────────┐  ┌───▼─────────┐  ┌────▼──────────────────┐
+                                     │ StrategyEngine │  │ RiskEngine  │  │ OrderStore (SQLite)   │
+                                     │ holdings+PnL   │  │ account PnL │  │ data/orders/orders.db │
+                                     └────────────────┘  └─────────────┘  └───────────────────────┘
+```
+
+## Process model and entrypoint
+
+### Control plane entrypoint
+
+`api_server.py`:
+
+- loads `.env` from repo root (via `python-dotenv`)
+- instantiates `EngineManager`
+- constructs FastAPI app via `src/control/api.py:create_app(mgr)`
+- runs Uvicorn on `CONTROL_HOST`/`CONTROL_PORT` (defaults `0.0.0.0:8000`)
+
+### Engine concurrency model
+
+There is **one Python process**. The engine runs **in-process** and uses threads:
+
+- `EventEngine` has:
+  - a worker thread consuming an in-memory queue of events
+  - a timer thread emitting `EVENT_TIMER` every `interval` seconds (default 1.0)
+
+The UI does **not** open a streaming connection; it polls logs using `GET /logs/tail`.
+
+## Backend architecture
+
+### Composition root: `MainEngine`
+
+`src/engines/engine_main.py:MainEngine` wires the system together:
+
+- `EventEngine`: deterministic routing + timer
+- `MarketEngine`: Binance klines -> bars/symbol snapshots + indicators
+- `GatewayEngine`: Roostoo adapter + order polling + cached account snapshots
+- `StrategyEngine`: strategy registry + holdings + mark-to-market PnL
+- `RiskEngine`: provides the `GET /account/pnl` snapshot
+- `OrderStore`: SQLite persistence for FILLED orders
+- `LogStore`: in-memory log tail + disk rotation writer
+
+`MainEngine` init sequence (simplified):
+
+- construct engines
+- discover tradeable pairs via Roostoo `/v3/exchangeInfo`
+- seed `MarketEngine` symbol buffers for discovered pairs
+- **auto-create an instance for every strategy** in `src/engines/engine_strategy.py:AVAILABLE_STRATEGIES`
+- start the `EventEngine`
+- warm cached account snapshot (balance + pending query)
+
+Important design choice:
+
+- Strategies are created in a **Created** state and only run when explicitly started.
+- There is no longer an “add/delete strategy” lifecycle in the control plane.
+
+### Lifecycle boundary: `EngineManager`
+
+`src/control/engine_manager.py:EngineManager` owns engine lifetime:
+
+- **Start**: constructs `MainEngine(env_mode=mock|real)` if not already running
+- **Stop**: stops the event engine and drops the engine reference
+
+The HTTP server stays up regardless of engine state.
+
+### Tick pipeline: `EventEngine`
+
+On each `EVENT_TIMER` tick (`src/engines/engine_event.py`):
+
+1. `MarketEngine.on_timer()` — refresh market bars/snapshots from Binance for active pairs
+2. `GatewayEngine.on_timer()` — poll tracked orders; refresh cached account snapshot on cadence
+3. `StrategyEngine.process_timer_event()` — recompute holdings/PnL from latest prices
+4. `StrategyEngine.on_timer()` — run each started strategy’s timer logic
+5. `RiskEngine.on_timer()` — update account PnL snapshot
+
+### Engines and responsibilities
+
+#### `GatewayEngine` (Roostoo adapter + polling + cache)
+
+`src/engines/engine_gateway.py:GatewayEngine`:
+
+- places/cancels orders via Roostoo REST
+- polls order status via `/v3/query_order` for tracked orders
+- maintains cached account snapshots:
+  - `balance` (from `/v3/balance`)
+  - `pending_count` (derived from cached pending map)
+  - `orders snapshot` (tracks list for UI)
+
+Important behavior:
+
+- MARKET orders can return **FILLED immediately** from `place_order`. The engine emits fills immediately so `StrategyEngine` holdings update even if the order never enters the polling loop.
+
+Mode and base URLs:
+
+- `env_mode`: `mock` or `real` (selected by `POST /system/start`)
+- `ROOSTOO_MOCK_BASE_URL` / `ROOSTOO_REAL_BASE_URL`: optional overrides
+
+Credentials are sourced from `.env` (see `.env.sample`).
+
+#### `MarketEngine` (market data + indicators)
+
+`src/engines/engine_market.py:MarketEngine`:
+
+- keeps per-symbol, per-interval bar buffers
+- refreshes bars from Binance klines on a throttled schedule
+- provides indicator helpers consumed by strategies (ATR, pivots, pattern checks)
+
+#### `StrategyEngine` (strategy registry + holdings/PnL)
+
+`src/engines/engine_strategy.py:StrategyEngine`:
+
+- owns the strategy instances (auto-created during engine init)
+- applies `OrderData` fill deltas to per-strategy holdings
+- computes mark-to-market totals:
+  - `total_cost` (cost value: avg_cost × quantity)
+  - `current_value` (quantity × mid_price)
+  - `unrealized_pnl`, `realized_pnl`, `pnl`
+- enforces “must be FLAT” before stopping a strategy
+
+#### `RiskEngine` (account PnL snapshot)
+
+`src/engines/engine_risk.py:RiskEngine` provides the snapshot returned by `GET /account/pnl`.
+
+## State and persistence
+
+### Orders DB (`OrderStore`)
+
+`src/control/order_store.py:OrderStore` persists orders in SQLite at `data/orders/orders.db`.
+
+The engine writes to SQLite when an order becomes **FILLED**. The control API exposes:
+
+- `GET /orders`: read-only query against SQLite (works even when the engine is stopped)
+
+### Logs (disk rotation + tail)
+
+`MainEngine.write_log()` appends to a rotating file:
+
+- default: `data/logs/system.log`
+
+Control API exposes:
+
+- `GET /logs/tail?n=...`: last \(n\) non-empty lines (works even if engine is stopped; returns `[]` if file missing)
+
+## Control plane (FastAPI) contract
+
+`src/control/api.py:create_app(engine_manager)` configures:
+
+- **CORS**:
+  - `CONTROL_CORS_ORIGINS` (comma-separated list)
+  - when `ENVIRONMENT=local`, Vite dev origins are always allowed (`http://localhost:5173`, `http://127.0.0.1:5173`)
+- **Admin token auth (optional)**:
+  - if `CONTROL_ADMIN_TOKEN` is set, privileged endpoints require `x-admin-token: <token>`
+  - if unset, endpoints are open (dev convenience)
+
+### Endpoint inventory (source of truth: `src/control/api.py`)
+
+- **Auth**
+  - `GET /auth/check`
+- **System**
+  - `GET /system/status`
+  - `POST /system/start` with `{ "mode": "mock" | "real" }`
+  - `POST /system/stop`
+  - `GET /health`
+- **Strategies**
+  - `GET /strategies/available`
+  - `GET /strategies/running`
+  - `POST /strategies/start`
+  - `POST /strategies/stop`
+  - (removed) `POST /strategies/add`
+  - (removed) `POST /strategies/delete`
+- **Holdings / positions**
+  - `GET /positions`
+  - `POST /positions/close`
+  - `POST /positions/close_all`
+- **Market pairs**
+  - `GET /pairs`
+- **Account (cached)**
+  - `GET /account/balance`
+  - `GET /account/pending_count`
+  - `GET /account/orders`
+  - `GET /account/pnl`
+- **Orders DB**
+  - `GET /orders`
+- **Logs**
+  - `GET /logs/tail`
+
+## Frontend architecture (React + Vite)
+
+The dashboard is a SPA under `frontend/`:
+
+- `frontend/src/App.tsx`: layout + polling loop (system status, strategies, positions; account snapshots when authed)
+- `frontend/src/lib/api.ts`: API client wrapper around `fetch()`
+- Panels in `frontend/src/components/`:
+  - `Sidebar.tsx` (auth + engine controls)
+  - `StrategiesPanel.tsx` (start/stop + holdings rows)
+  - `AccountValuePanel.tsx` (balance + account PnL)
+  - `OrdersPanel.tsx` (cached order tracks)
+  - `LogsPanel.tsx` (log tail viewer)
+
+Constraints:
+
+- UI polls; no streaming transport
+- browser does not call Roostoo directly; exchange calls stay inside the engine
+
+Configuration:
+
+- `VITE_API_BASE` controls backend base URL (defaults to `http://localhost:8000`)
+- admin token is stored in `localStorage` and sent as `x-admin-token`
+
+## Scripts
+
+- `scripts/debug_order_parse.py`: place MARKET → query → print raw detail → parse into `OrderData`
+- `scripts/flatten_account.py`: cancel pending orders → market-sell all non-USD wallet positions
+
+## Known gaps / sharp edges
+
+- Many endpoints return **cached snapshots** by design (UI should not trigger exchange calls).
+- Strategies that derive symbol lists from `MarketEngine.get_cached_symbols()` depend on `MainEngine` seeding market buffers first (current init order handles this).
+
+# T-hackathon Architecture (current)
+
 This document describes the *actual* architecture implemented in this repository: a single-process Python trading engine with a FastAPI control plane, plus a React (Vite) dashboard that polls snapshots and uses Server-Sent Events (SSE) for live logs.
 
 ## Repository layout
@@ -221,10 +492,10 @@ The FastAPI app is built by `src/control/api.py:create_app(engine_manager)` and 
 - **Strategies**
   - `GET /strategies/available`
   - `GET /strategies/running`
-  - `POST /strategies/add`
+  - (removed) `POST /strategies/add` — strategies are created on system init
   - `POST /strategies/start`
   - `POST /strategies/stop`
-  - `POST /strategies/delete`
+  - (removed) `POST /strategies/delete` — strategies are created on system init and not deleted
 - **Positions / holdings**
   - `GET /positions`
 - **Market pairs**

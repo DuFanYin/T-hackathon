@@ -15,14 +15,8 @@ export type StartStrategyResponse = { ok: boolean; name: string };
 export type StartStrategyByNamePayload = { name: string };
 export type StartStrategyByNameResponse = { ok: boolean; name: string };
 
-export type AddStrategyPayload = { strategy: string };
-export type AddStrategyResponse = { ok: boolean; name: string };
-
 export type StopStrategyPayload = { name: string };
 export type StopStrategyResponse = { ok: boolean; name: string };
-
-export type DeleteStrategyPayload = { name: string };
-export type DeleteStrategyResponse = { ok: boolean; name: string };
 
 export type Position = {
   symbol: string;
@@ -56,6 +50,7 @@ export type SystemStatus = { running: boolean; mode: 'mock' | 'real' | null };
 export type AccountBalanceResponse = { balance: unknown };
 export type AccountPendingCountResponse = { pending_count: unknown };
 export type AccountOrdersResponse = { orders: unknown };
+export type AccountPnlResponse = { equity: number; init_balance: number; pnl: number; pnl_pct: number };
 
 export type OrderRow = {
   order_id: string;
