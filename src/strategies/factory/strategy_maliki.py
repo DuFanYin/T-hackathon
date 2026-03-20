@@ -93,8 +93,9 @@ class StrategyMaliki(StrategyTemplate):
 
         # ── Internal state ──
         self._tick_count: int = 0
-        self._positions: dict[str, dict] = {}
-        # {coin: {"qty", "entry_price", "peak_price", "entry_tick", "roostoo_pair"}}
+        # Internal risk metadata only (NOT holdings source-of-truth).
+        self._risk_state: dict[str, dict[str, float | int]] = {}
+        # {coin: {"peak_price": float, "entry_tick": int, "entry_price": float}}
 
     def _format_pair(self, coin: str) -> str:
         """Format Roostoo pair for logging (e.g. 'BTC/USD')."""
@@ -107,23 +108,37 @@ class StrategyMaliki(StrategyTemplate):
         # gateway-compatible internal symbol (so GatewayEngine converts USDT -> USD pair)
         return f"{coin}USDT"
 
+    @staticmethod
+    def _symbol_to_coin(symbol: str) -> str:
+        s = str(symbol or "").strip().upper()
+        return s[:-4] if s.endswith("USDT") else s
+
+    def _engine_positions(self) -> dict[str, float]:
+        se = getattr(self._main, "strategy_engine", None)
+        if not se:
+            return {}
+        holding = se.get_holding(self.strategy_name)
+        out: dict[str, float] = {}
+        for sym, pos in getattr(holding, "positions", {}).items():
+            qty = float(getattr(pos, "quantity", 0.0) or 0.0)
+            if qty > 0:
+                out[self._symbol_to_coin(sym)] = qty
+        return out
+
     def _log_reconciliation(self) -> None:
-        """Log strategy_maliki internal positions vs engine holdings and gateway pending orders."""
-        strat_pos = {self._format_order_symbol(c): p["qty"] for c, p in self._positions.items()}
-        eng_pos = {}
-        if hasattr(self._main, "strategy_engine") and self._main.strategy_engine:
-            holding = self._main.strategy_engine.get_holding(self.strategy_name)
-            eng_pos = {s: p.quantity for s, p in holding.positions.items() if p.quantity != 0}
+        """Log internal risk-state symbols vs engine-held symbols and pending orders."""
+        risk_syms = sorted(self._risk_state.keys())
+        eng_syms = sorted(self._engine_positions().keys())
         pending = self.get_pending_orders()  # engine cached pending by symbol
-        diff = set(strat_pos.keys()) ^ set(eng_pos.keys())
+        diff = set(risk_syms) ^ set(eng_syms)
         if diff:
             self.write_log(
-                f"RECONCILE: maliki={list(strat_pos)} | Engine={list(eng_pos)} | pending={list(pending)} | "
+                f"RECONCILE: risk={risk_syms} | engine={eng_syms} | pending={list(pending)} | "
                 f"mismatch={list(diff)} — check fill/order status",
                 level="WARN",
             )
-        elif strat_pos or pending:
-            self.write_log(f"RECONCILE: OK | maliki={strat_pos} Engine={eng_pos} pending={pending}", level="DEBUG")
+        elif eng_syms or pending:
+            self.write_log(f"RECONCILE: OK | risk={risk_syms} engine={eng_syms} pending={pending}", level="DEBUG")
 
     # ──────────────────────────────────────────
     # Lifecycle
@@ -153,7 +168,7 @@ class StrategyMaliki(StrategyTemplate):
 
     def on_stop_logic(self) -> None:
         self.write_log("strategy_maliki stopping — closing all positions", level="INFO")
-        self._close_all_positions("strategy_stop")
+        self.clear_all_positions()
 
     # ──────────────────────────────────────────
     # Main timer logic (called every tick)
@@ -268,25 +283,31 @@ class StrategyMaliki(StrategyTemplate):
         """Check and execute trailing stops (respecting min hold)."""
         to_close = []
 
-        for coin, pos in self._positions.items():
+        held = self._engine_positions()
+        for coin, qty in held.items():
             price = current_prices.get(coin)
             if not price:
                 continue
+            st = self._risk_state.setdefault(
+                coin,
+                {"peak_price": price, "entry_tick": self._tick_count, "entry_price": price},
+            )
 
             # Update peak
-            if price > pos["peak_price"]:
-                pos["peak_price"] = price
+            if price > float(st["peak_price"]):
+                st["peak_price"] = price
 
             # Respect minimum hold period
-            ticks_held = self._tick_count - pos["entry_tick"]
+            ticks_held = self._tick_count - int(st["entry_tick"])
             if ticks_held < self.min_hold_candles:
                 continue
 
             # Check trailing stop
-            dd = (pos["peak_price"] - price) / pos["peak_price"] * 100
+            peak = float(st["peak_price"])
+            dd = (peak - price) / peak * 100 if peak > 0 else 0.0
             if dd >= self.trailing_stop_pct:
                 self.write_log(
-                    f"TRAILING STOP {coin}: peak={pos['peak_price']:.4f} "
+                    f"TRAILING STOP {coin}: peak={peak:.4f} "
                     f"now={price:.4f} dd={dd:.1f}%",
                     level="WARN",
                 )
@@ -302,13 +323,15 @@ class StrategyMaliki(StrategyTemplate):
     def _rebalance(self, current_prices: dict) -> None:
         """Core rebalance logic: regime check → rank → rotate."""
         regime = self._is_regime_bullish()
+        held = self._engine_positions()
 
         # If bearish regime, close positions that have met min hold
         if not regime:
-            n = len(self._positions)
+            n = len(held)
             self.write_log(f"REGIME: Bearish (BTC below MA) — exiting {n} position(s)", level="WARN")
-            for coin in list(self._positions.keys()):
-                ticks_held = self._tick_count - self._positions[coin]["entry_tick"]
+            for coin in list(held.keys()):
+                st = self._risk_state.get(coin)
+                ticks_held = self._tick_count - int(st["entry_tick"]) if st else self.min_hold_candles
                 if ticks_held >= self.min_hold_candles:
                     self._close_position(coin, "regime_bearish")
             return
@@ -328,8 +351,9 @@ class StrategyMaliki(StrategyTemplate):
                 level="WARN",
             )
             # If nothing qualifies, rotate to cash (respect min hold).
-            for coin in list(self._positions.keys()):
-                ticks_held = self._tick_count - self._positions[coin]["entry_tick"]
+            for coin in list(held.keys()):
+                st = self._risk_state.get(coin)
+                ticks_held = self._tick_count - int(st["entry_tick"]) if st else self.min_hold_candles
                 if ticks_held >= self.min_hold_candles:
                     self._close_position(coin, "no_qualifiers")
             return
@@ -337,20 +361,23 @@ class StrategyMaliki(StrategyTemplate):
         target_coins = [r["coin"] for r in rankings[:self.top_n]]
 
         # Exit positions not in target (if min hold met)
-        for coin in list(self._positions.keys()):
+        for coin in list(held.keys()):
             if coin not in target_coins:
-                ticks_held = self._tick_count - self._positions[coin]["entry_tick"]
+                st = self._risk_state.get(coin)
+                ticks_held = self._tick_count - int(st["entry_tick"]) if st else self.min_hold_candles
                 if ticks_held >= self.min_hold_candles:
                     self.write_log(f"ROTATION EXIT: {coin} no longer in top {self.top_n}", level="INFO")
                     self._close_position(coin, "rotation")
 
         # Enter new targets
+        pending_by_symbol = self.get_pending_orders()
         for rank_info in rankings[:self.top_n]:
             coin = rank_info["coin"]
-            if coin in self._positions:
+            sym = self._format_order_symbol(coin)
+            if coin in held or pending_by_symbol.get(sym):
                 continue  # already holding
 
-            slots_open = self.top_n - len(self._positions)
+            slots_open = self.top_n - len(held)
             if slots_open <= 0:
                 break
 
@@ -413,21 +440,18 @@ class StrategyMaliki(StrategyTemplate):
             order_type="LIMIT",
         )
 
-        # Track position internally
-        self._positions[coin] = {
-            "qty": qty,
-            "entry_price": price,
-            "peak_price": price,
-            "entry_tick": self._tick_count,
-            "roostoo_pair": pair,
-            "roostoo_symbol": roostoo_symbol,
-            "order_id": order_id,
-        }
+        if order_id:
+            # Start risk metadata at submit time; holdings still come from engine fill events.
+            self._risk_state.setdefault(
+                coin,
+                {"peak_price": price, "entry_tick": self._tick_count, "entry_price": price},
+            )
 
     def _close_position(self, coin: str, reason: str) -> None:
         """Sell via framework's send_order."""
-        pos = self._positions.get(coin)
-        if not pos:
+        held = self._engine_positions()
+        qty = float(held.get(coin, 0.0) or 0.0)
+        if qty <= 0:
             return
 
         current_price = 0.0
@@ -437,21 +461,22 @@ class StrategyMaliki(StrategyTemplate):
             if sd and getattr(sd, "last_price", 0.0) > 0:
                 current_price = float(sd.last_price)
 
+        st = self._risk_state.get(coin, {})
+        entry_price = float(st.get("entry_price", 0.0) or 0.0)
         self.write_log(
-            f"SELL {coin}: qty={pos['qty']:.5f} reason={reason} "
-            f"entry={pos['entry_price']:.4f} now={current_price:.4f}",
+            f"SELL {coin}: qty={qty:.5f} reason={reason} "
+            f"entry={entry_price:.4f} now={current_price:.4f}",
             level="INFO",
         )
 
         self.close_position(
-            symbol=pos["roostoo_symbol"],
-            quantity=pos["qty"],
+            symbol=self._format_order_symbol(coin),
+            quantity=qty,
             order_type="MARKET",
         )
-
-        del self._positions[coin]
+        self._risk_state.pop(coin, None)
 
     def _close_all_positions(self, reason: str) -> None:
         """Close all positions."""
-        for coin in list(self._positions.keys()):
+        for coin in list(self._engine_positions().keys()):
             self._close_position(coin, reason)

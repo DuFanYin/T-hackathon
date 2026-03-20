@@ -99,6 +99,9 @@ class StrategyJH(StrategyTemplate):
                 "limit_bar_idx": 0,
                 "active_stop": None,
                 "active_target": None,
+                "pending_stop": None,
+                "pending_target": None,
+                "pending_order_id": "",
                 "entry_price": 0.0,
             }
         self.write_log(
@@ -135,9 +138,11 @@ class StrategyJH(StrategyTemplate):
         qty = float(pos.quantity) if pos else 0.0
 
         if qty <= 0:
-            # Flat: clear stop/target (position closed or never filled).
-            st["active_stop"] = None
-            st["active_target"] = None
+            # If a BUY entry is still pending, keep staged exits untouched.
+            pending_ids = self.get_pending_orders().get(sym, [])
+            if not pending_ids:
+                st["active_stop"] = None
+                st["active_target"] = None
             return
 
         sym_data = self.get_symbol(sym)
@@ -276,10 +281,11 @@ class StrategyJH(StrategyTemplate):
         rounded_stop = _round_price(stop_price, mintick)
         rounded_target = _round_price(target_price, mintick)
 
-        self.open_position(sym, qty, price=rounded_entry, order_type="LIMIT")
+        oid = self.open_position(sym, qty, price=rounded_entry, order_type="LIMIT")
         st["limit_bar_idx"] = int(market.get_bar_count(sym, interval))
-        st["active_stop"] = rounded_stop
-        st["active_target"] = rounded_target
+        st["pending_order_id"] = str(oid or "")
+        st["pending_stop"] = rounded_stop
+        st["pending_target"] = rounded_target
         st["entry_price"] = rounded_entry
 
         ht = "H1" if int(st["hit_count"]) == 1 else "H2"
@@ -291,3 +297,33 @@ class StrategyJH(StrategyTemplate):
 
     def on_order(self, event: Any) -> None:
         super().on_order(event)
+        data = getattr(event, "data", event)
+        symbol = str(getattr(data, "symbol", "") or "")
+        side = str(getattr(data, "side", "") or "").upper()
+        status = str(getattr(data, "status", "") or "").upper()
+        filled_qty = float(getattr(data, "filled_quantity", 0.0) or 0.0)
+        filled_avg = float(getattr(data, "filled_avg_price", 0.0) or 0.0)
+
+        st = self._state.get(symbol)
+        if not st:
+            return
+
+        if side == "BUY":
+            if status == "FILLED" and filled_qty > 0:
+                if st.get("pending_stop") is not None and st.get("pending_target") is not None:
+                    st["active_stop"] = st["pending_stop"]
+                    st["active_target"] = st["pending_target"]
+                if filled_avg > 0:
+                    st["entry_price"] = filled_avg
+                st["pending_stop"] = None
+                st["pending_target"] = None
+                st["pending_order_id"] = ""
+            elif status in {"CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}:
+                st["pending_stop"] = None
+                st["pending_target"] = None
+                st["pending_order_id"] = ""
+            return
+
+        if side == "SELL" and status == "FILLED":
+            st["active_stop"] = None
+            st["active_target"] = None
