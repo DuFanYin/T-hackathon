@@ -4,13 +4,12 @@ Strategy template: lifecycle and helpers for timer-driven strategies (OTrader-st
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, Any
 
 from src.utilities.events import EVENT_LOG
 from src.utilities.intents import INTENT_PLACE_ORDER
 from src.utilities.interval import Interval
-from src.utilities.object import LogData, OrderRequest, SymbolData, TradingPair
+from src.utilities.object import LogData, OrderData, OrderRequest, SymbolData, TradingPair
 
 if TYPE_CHECKING:
     from src.engines.engine_main import MainEngine
@@ -108,11 +107,23 @@ class StrategyTemplate:
         """
         me = getattr(self._main, "market_engine", None)
         if me is None or not hasattr(me, "ensure_history"):
+            self.write_log(
+                f"{self.strategy_name} | HISTORY | skip: no market_engine.ensure_history",
+                level="WARN",
+            )
             return
         try:
             reqs = list(self.history_requirements() or [])
-        except Exception:
+        except Exception as e:
+            self.write_log(f"{self.strategy_name} | HISTORY | requirements failed: {e}", level="WARN")
             return
+        if not reqs:
+            return
+        self.write_log(
+            f"{self.strategy_name} | HISTORY | backfill {len(reqs)} symbol/interval requests from Binance…",
+            level="INFO",
+        )
+        ok = 0
         for r in reqs:
             if not isinstance(r, dict):
                 continue
@@ -122,12 +133,19 @@ class StrategyTemplate:
             if not symbol or not interval or bars <= 0:
                 continue
             try:
-                me.ensure_history(symbol, interval, bars)
+                n = int(me.ensure_history(symbol, interval, bars))
+                if n > 0:
+                    ok += 1
             except Exception:
                 continue
+        self.write_log(
+            f"{self.strategy_name} | HISTORY | backfill done | ok={ok}/{len(reqs)} non-empty buffers",
+            level="INFO",
+        )
 
     def on_start(self) -> None:
         self._started = True
+        self.on_start_logic()
 
     def on_stop(self) -> None:
         self._started = False
@@ -143,6 +161,11 @@ class StrategyTemplate:
 
     def on_order(self, event: Any) -> None:
         data = getattr(event, "data", event)
+        # Order events are broadcast to all strategies; ignore orders that don't belong to us.
+        if isinstance(data, OrderData):
+            order_strat = getattr(data, "strategy_name", None)
+            if order_strat is not None and order_strat != self.strategy_name:
+                return
         order_id = getattr(data, "order_id", "")
         symbol = getattr(data, "symbol", "")
         side = getattr(data, "side", "")
@@ -156,6 +179,10 @@ class StrategyTemplate:
 
     def on_init_logic(self) -> None:
         """Override: run once after init."""
+        pass
+
+    def on_start_logic(self) -> None:
+        """Override: run when strategy starts (immediately after `_started` is set)."""
         pass
 
     def on_stop_logic(self) -> None:
@@ -180,15 +207,6 @@ class StrategyTemplate:
             return v if v >= 0 else None
         except (TypeError, ValueError):
             return None
-
-    @staticmethod
-    def _quantize_to_decimals(value: float, decimals: int) -> float:
-        """Round to `decimals` fractional digits (exchange price / amount step)."""
-        d = int(decimals)
-        if d < 0:
-            return float(value)
-        factor = 10.0**d
-        return math.floor(float(value) * factor + 0.5) / factor
 
     def _prepare_order_for_exchange(
         self,
@@ -221,7 +239,7 @@ class StrategyTemplate:
         if amt_dec is None:
             qty = float(quantity)
         else:
-            qty = self._quantize_to_decimals(float(quantity), amt_dec)
+            qty = TradingPair.quantize_to_decimal_places(float(quantity), amt_dec)
 
         lim_price: float
         if ot == "MARKET":
@@ -229,7 +247,7 @@ class StrategyTemplate:
         else:
             lim_price = float(price if price is not None else 0.0)
             if lim_price > 0 and px_dec is not None:
-                lim_price = self._quantize_to_decimals(lim_price, px_dec)
+                lim_price = TradingPair.quantize_to_decimal_places(lim_price, px_dec)
 
         if qty <= 0:
             return None

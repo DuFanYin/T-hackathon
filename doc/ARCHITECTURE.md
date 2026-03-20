@@ -30,7 +30,7 @@ High-level runtime diagram:
 ┌───────────────────────────────┐    ┌───────────────────────────────────────────┐
 │ React Dashboard (Vite)        │    │ FastAPI Control Plane                     │
 │ frontend/                     │───▶│ src/control/api.py                        │
-│ - Strategies/Account/Orders   │    │ - CORS + optional x-admin-token auth      │
+│ - Strategies/Account/Orders   │    │ - CORS + snapshots + lifecycle calls      │
 │ - Logs (tail polling)         │    │ - Snapshots + lifecycle calls             │
 └───────────────────────────────┘    └───────────────┬───────────────────────────┘
                                                       owns lifetime via
@@ -200,14 +200,8 @@ Control API exposes:
 - **CORS**:
   - `CONTROL_CORS_ORIGINS` (comma-separated list)
   - when `ENVIRONMENT=local`, Vite dev origins are always allowed (`http://localhost:5173`, `http://127.0.0.1:5173`)
-- **Admin token auth (optional)**:
-  - if `CONTROL_ADMIN_TOKEN` is set, privileged endpoints require `x-admin-token: <token>`
-  - if unset, endpoints are open (dev convenience)
-
 ### Endpoint inventory (source of truth: `src/control/api.py`)
 
-- **Auth**
-  - `GET /auth/check`
 - **System**
   - `GET /system/status`
   - `POST /system/start` with `{ "mode": "mock" | "real" }`
@@ -240,10 +234,10 @@ Control API exposes:
 
 The dashboard is a SPA under `frontend/`:
 
-- `frontend/src/App.tsx`: layout + polling loop (system status, strategies, positions; account snapshots when authed)
+- `frontend/src/App.tsx`: layout + polling loop (system status, strategies, positions, account snapshots)
 - `frontend/src/lib/api.ts`: API client wrapper around `fetch()`
 - Panels in `frontend/src/components/`:
-  - `Sidebar.tsx` (auth + engine controls)
+  - `Sidebar.tsx` (engine controls)
   - `StrategiesPanel.tsx` (start/stop + holdings rows)
   - `AccountValuePanel.tsx` (balance + account PnL)
   - `OrdersPanel.tsx` (cached order tracks)
@@ -257,7 +251,6 @@ Constraints:
 Configuration:
 
 - `VITE_API_BASE` controls backend base URL (defaults to `http://localhost:8000`)
-- admin token is stored in `localStorage` and sent as `x-admin-token`
 
 ## Scripts
 
@@ -301,7 +294,7 @@ High-level runtime diagram:
 ┌───────────────────────────────┐    ┌───────────────────────────────────────────┐
 │ React Dashboard               │    │ FastAPI Control Plane                     │
 │ frontend/                     │───▶│ src/control/api.py                        │
-│ - Strategies/Account/Orders   │    │ - CORS + optional x-admin-token auth      │
+│ - Strategies/Account/Orders   │    │ - CORS + snapshots + lifecycle calls      │
 │ - Logs (SSE)                  │    │ - Read-mostly snapshots + lifecycle calls │
 └───────────────┬───────────────┘    └───────────────┬───────────────────────────┘
                 │ SSE: GET /logs/stream              │
@@ -476,10 +469,6 @@ The FastAPI app is built by `src/control/api.py:create_app(engine_manager)` and 
 - **CORS**:
   - `CONTROL_CORS_ORIGINS` (comma-separated list)
   - when `ENVIRONMENT=local`, dev origins for Vite (`http://localhost:5173`, `http://127.0.0.1:5173`) are always allowed
-- **Admin token auth (optional)**:
-  - if `CONTROL_ADMIN_TOKEN` is set, privileged endpoints require `x-admin-token: <token>`
-  - if unset, all endpoints are effectively open (dev convenience)
-
 ### Endpoint inventory (source of truth: `src/control/api.py`)
 
 - **System**
@@ -487,8 +476,6 @@ The FastAPI app is built by `src/control/api.py:create_app(engine_manager)` and 
   - `POST /system/start` with `{ "mode": "mock" | "real" }`
   - `POST /system/stop`
   - `GET /health`
-- **Auth**
-  - `GET /auth/check`
 - **Strategies**
   - `GET /strategies/available`
   - `GET /strategies/running`
@@ -526,14 +513,13 @@ The dashboard lives in `frontend/` and is a single-page app:
 
 Data access is split deliberately:
 
-- **Polling snapshots**: the app polls status/strategies/positions (and account snapshots when authed) on a fixed cadence.
+- **Polling snapshots**: the app polls status/strategies/positions and account snapshots on a fixed cadence.
 - **Streaming logs**: the app opens an `EventSource` to `/logs/stream` for live logs.
 - **No direct exchange calls from the browser**: exchange traffic is confined to `GatewayEngine` in the backend.
 
 ### Configuration
 
 - Backend base URL: `VITE_API_BASE` (see `frontend/.env.example`), defaults to `http://localhost:8000`.
-- Admin token: stored in `localStorage` and sent as `x-admin-token`.
 
 ## Operational notes and known gaps
 

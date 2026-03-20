@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import './App.css';
-import { api, setAdminToken } from './lib/api';
+import { api } from './lib/api';
 import type {
   Holding,
   RunningStrategy,
@@ -43,6 +43,7 @@ function AppShell() {
 
   const LOGS_CACHE_KEY = 't_logs_cache'
   const LOGS_CACHE_MAX = 500
+  const LOG_START_EPOCH_KEY = 't_log_start_epoch_ms'
 
   const [logs, setLogs] = useState<string[]>(() => {
     try {
@@ -52,33 +53,33 @@ function AppShell() {
       return []
     }
   })
-  const logBoxRef = useRef<HTMLDivElement>(null as unknown as HTMLDivElement)
-  const [system, setSystem] = useState<SystemStatus>({ running: false, mode: null })
-  const [backendOk, setBackendOk] = useState<boolean>(false)
-  const [adminToken, setAdminTokenState] = useState<string | null>(() => {
+  const [logStartEpochMs, setLogStartEpochMs] = useState<number | null>(() => {
     try {
-      return window.localStorage.getItem('t_admin_token') || null
+      const v = window.localStorage.getItem(LOG_START_EPOCH_KEY)
+      if (!v) return null
+      const n = Number(v)
+      return Number.isFinite(n) ? n : null
     } catch {
       return null
     }
   })
-
+  const logBoxRef = useRef<HTMLDivElement>(null as unknown as HTMLDivElement)
+  const [system, setSystem] = useState<SystemStatus>({ running: false, mode: null })
+  const [backendOk, setBackendOk] = useState<boolean>(false)
   const apiBase = api.baseUrl;
 
-  const isAuthed = !!adminToken
-
-  useEffect(() => {
-    setAdminToken(adminToken || null)
+  function handleEngineStart() {
+    // User clicked Mock/Live: from this moment onwards only show log lines.
+    // We store an epoch (ms) and clear current log buffer immediately.
+    const epochMs = Math.floor(Date.now() / 1000) * 1000
+    setLogStartEpochMs(epochMs)
     try {
-      if (adminToken) {
-        window.localStorage.setItem('t_admin_token', adminToken)
-      } else {
-        window.localStorage.removeItem('t_admin_token')
-      }
+      window.localStorage.setItem(LOG_START_EPOCH_KEY, String(epochMs))
     } catch {
       // ignore
     }
-  }, [adminToken])
+    setLogs([])
+  }
 
   async function refreshAll() {
     try {
@@ -113,14 +114,7 @@ function AppShell() {
         setAccountPnl(pnl)
         setAccountErr('')
       } catch (e: unknown) {
-        const msg = getErrorMessage(e)
-        // If account endpoints are still token-protected on backend, avoid noisy
-        // "401 no token" in non-control areas.
-        if (msg.includes('401')) {
-          setAccountErr('')
-        } else {
-          setAccountErr(msg)
-        }
+        setAccountErr(getErrorMessage(e))
       }
     } catch {
       setBackendOk(false)
@@ -163,11 +157,10 @@ function AppShell() {
         backendOk={backendOk}
         engineMode={system.mode}
         systemRunning={system.running}
-        isAuthed={isAuthed}
         holdings={positions}
         running={running}
-        onAuthToken={(token) => setAdminTokenState(token)}
         onRefresh={refreshAll}
+        onEngineStart={handleEngineStart}
       />
 
       <main className="flex h-screen w-full flex-col gap-2 overflow-hidden bg-gradient-to-br from-slate-950 via-slate-950 to-slate-900 px-2 py-2 sm:px-3">
@@ -181,7 +174,6 @@ function AppShell() {
                   <StrategiesPanel
                     running={running}
                     holdings={positions}
-                    isAuthed={isAuthed}
                     onRefresh={refreshAll}
                   />
                 </div>
@@ -209,6 +201,7 @@ function AppShell() {
             onTail={refreshLogs}
             onClear={() => setLogs([])}
             logBoxRef={logBoxRef}
+            logStartEpochMs={logStartEpochMs}
           />
           )}
         </section>

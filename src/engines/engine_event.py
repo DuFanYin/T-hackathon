@@ -10,6 +10,8 @@ from threading import Thread
 from time import sleep
 from typing import Any, TYPE_CHECKING
 
+from src.control.log_store import format_engine_log_timestamp
+from src.engines.engine_gateway import GatewayEngine
 from src.utilities.base_engine import BaseEngine
 from src.utilities.events import EVENT_BAR, EVENT_LOG, EVENT_ORDER, EVENT_RISK_ALERT, EVENT_TIMER
 from src.utilities.intents import (
@@ -147,7 +149,7 @@ class EventEngine(BaseEngine):
                 me.write_log(msg, level=level, source=source)
         except Exception:
             pass
-        print(f"[{level}] {source} | {msg}")
+        print(f"{format_engine_log_timestamp()} [{level}] {source} | {msg}")
 
     def _handle_risk_alert(self, event: Event) -> None:
         msg = getattr(event.data, "msg", None) or str(event.data)
@@ -187,11 +189,18 @@ class EventEngine(BaseEngine):
                 )
                 if isinstance(resp, dict) and resp.get("Success") is False:
                     return None
-                order_id = None
-                if isinstance(resp, dict):
-                    order_id = resp.get("order_id") or resp.get("orderId")
-                    if order_id is None and isinstance(resp.get("OrderDetail"), dict):
-                        order_id = resp["OrderDetail"].get("OrderID")
+                order_id = GatewayEngine.extract_order_id_from_place_response(
+                    resp if isinstance(resp, dict) else None
+                )
+
+                if order_id is None and isinstance(resp, dict) and resp.get("Success") is not False:
+                    me.write_log(
+                        "place_order: Success=True but OrderDetail.OrderID missing (Roostoo Public API "
+                        f"third_party/Roostoo-API-Documents/README.md) — strategy={data.strategy_name} "
+                        f"symbol={data.symbol}",
+                        level="WARN",
+                        source="System",
+                    )
 
                 if order_id is not None:
                     oid = str(order_id)

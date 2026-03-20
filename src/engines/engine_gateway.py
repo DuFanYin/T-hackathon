@@ -91,6 +91,30 @@ class GatewayEngine(BaseEngine):
         self._last_order_query_ts: float | None = None  # when we last ran query_order (for UI)
         self._timer_seconds: int = 0  # counter: increments each timer tick, reset on refresh
 
+    # ---------------- order id / attribution (shared with EventEngine) ----------------
+
+    @staticmethod
+    def extract_order_id_from_place_response(resp: dict[str, Any] | None) -> str | None:
+        """
+        Roostoo Public API: POST /v3/place_order returns ``Success``, ``ErrMsg``, and ``OrderDetail``
+        with ``OrderID`` (see ``third_party/Roostoo-API-Documents/README.md`` — New order (Trade)).
+        """
+        if not isinstance(resp, dict):
+            return None
+        od = resp.get("OrderDetail")
+        if not isinstance(od, dict):
+            return None
+        oid = od.get("OrderID")
+        if oid is None:
+            return None
+        s = str(oid).strip()
+        return s if s else None
+
+    def _pending_discard_oid_everywhere(self, oid: str) -> None:
+        """Ensure each order_id appears in at most one strategy pending bucket."""
+        for ids in self._strategy_pending.values():
+            ids.discard(oid)
+
     # ---------------- helpers ----------------
 
     @staticmethod
@@ -324,24 +348,35 @@ class GatewayEngine(BaseEngine):
     ) -> Dict[str, Any] | None:
         """POST /v3/place_order (SIGNED). Returns raw API response dict or None."""
         pair = self._to_roostoo_pair(symbol)
+        sym_key = str(symbol or "").strip().upper()
+        tp = self.trading_pairs_by_symbol.get(sym_key)
+
+        inferred = "MARKET" if price is None else "LIMIT"
+        ot = (order_type or inferred).upper()
+
+        qty = float(quantity)
+        if tp is not None:
+            qty = tp.quantize_quantity(qty)
+
         payload: Dict[str, Any] = {
             "timestamp": self._ts_ms(),
             "pair": pair,
             "side": side,
-            "quantity": quantity,
+            "quantity": qty,
+            "type": ot,
         }
-
-        inferred = "MARKET" if price is None else "LIMIT"
-        payload["type"] = (order_type or inferred).upper()
-        if payload["type"] == "LIMIT":
-            payload["price"] = float(price if price is not None else 0.0)
+        if ot == "LIMIT":
+            lim = float(price if price is not None else 0.0)
+            if tp is not None and lim > 0:
+                lim = tp.quantize_price(lim)
+            payload["price"] = lim
 
         resp = self._request_post("/v3/place_order", data=payload, signed=True)
         if isinstance(resp, dict) and resp.get("Success") is False:
             err_code = resp.get("ErrorCode", resp.get("Code", ""))
             err_msg = resp.get("ErrorMessage", resp.get("Message", str(resp)[:300]))
             self.log(
-                f"ERROR: place_order failed | pair={pair} side={side} qty={quantity} type={payload['type']} | "
+                f"ERROR: place_order failed | pair={pair} side={side} qty={qty} type={payload['type']} | "
                 f"Success=False ErrorCode={err_code} ErrorMessage={err_msg}",
                 level="ERROR",
                 source="Gateway",
@@ -480,68 +515,58 @@ class GatewayEngine(BaseEngine):
         return self.get_pending_count()
 
     def _merge_order_from_api(self, item: dict[str, Any], strategy_name: str | None = None) -> OrderData | None:
-        """Create or update OrderData in _order_map from API detail. Returns the OrderData."""
-        oid = str(item.get("OrderID", "") or "")
+        """
+        Map one Roostoo ``OrderDetail`` or ``OrderMatched[]`` element into ``OrderData``.
+
+        Field names follow ``third_party/Roostoo-API-Documents/README.md`` (Query order / New order).
+        """
+        oid_raw = item.get("OrderID")
+        if oid_raw is None:
+            return None
+        oid = str(oid_raw).strip()
         if not oid:
             return None
-        strat = strategy_name
-        if strat is None and oid in self._order_map:
-            strat = self._order_map[oid].strategy_name or "?"
-        strat = strat or "?"
-        pair = str(item.get("Pair", "") or "")
+        # Attribution: explicit strategy wins; else keep existing map entry; else unknown \"?\".
+        if strategy_name is not None and str(strategy_name).strip():
+            strat = str(strategy_name).strip()
+        elif oid in self._order_map:
+            prev = self._order_map[oid].strategy_name
+            strat = prev if prev and str(prev).strip() else "?"
+        else:
+            strat = "?"
+        pair = str(item.get("Pair") or "")
         if "/" in pair:
             base, quote = pair.split("/", 1)
             symbol = f"{base}USDT" if quote == "USD" else f"{base}{quote}"
         else:
             symbol = ""
 
-        # Roostoo field names have varied across environments/docs; accept common aliases.
-        fq_raw = (
-            item.get("FilledQuantity")
-            if item.get("FilledQuantity") is not None
-            else item.get("FilledQty")
-            if item.get("FilledQty") is not None
-            else item.get("filled_quantity")
-            if item.get("filled_quantity") is not None
-            else 0
-        )
-        favg_raw = (
-            item.get("FilledAverPrice")
-            if item.get("FilledAverPrice") is not None
-            else item.get("FilledAvgPrice")
-            if item.get("FilledAvgPrice") is not None
-            else item.get("FilledAveragePrice")
-            if item.get("FilledAveragePrice") is not None
-            else item.get("filled_avg_price")
-            if item.get("filled_avg_price") is not None
-            else 0
-        )
+        fq_raw = item.get("FilledQuantity")
+        favg_raw = item.get("FilledAverPrice")
 
         data = OrderData(
             order_id=oid,
             symbol=symbol,
-            side=str(item.get("Side", "") or ""),
-            quantity=float(item.get("Quantity", 0) or 0),
-            price=float(item.get("Price", 0) or 0),
-            status=str(item.get("Status", "") or "PENDING"),
-            order_type=str(item.get("Type", "") or "LIMIT"),
-            filled_quantity=float(fq_raw or 0),
-            filled_avg_price=float(favg_raw or 0),
-            role=str(item.get("Role", "") or "") or None,
-            stop_type=str(item.get("StopType", "") or "") or None,
+            side=str(item.get("Side") or ""),
+            quantity=float(item.get("Quantity") or 0),
+            price=float(item.get("Price") or 0),
+            status=str(item.get("Status") or "PENDING"),
+            order_type=str(item.get("Type") or "LIMIT"),
+            filled_quantity=float(fq_raw if fq_raw is not None else 0),
+            filled_avg_price=float(favg_raw if favg_raw is not None else 0),
+            role=str(item.get("Role") or "") or None,
+            stop_type=str(item.get("StopType") or "") or None,
             create_ts=item.get("CreateTimestamp"),
             finish_ts=item.get("FinishTimestamp"),
             strategy_name=strat or None,
         )
         self._order_map[oid] = data
         status = (data.status or "").upper()
+        self._pending_discard_oid_everywhere(oid)
         if status not in _FINISHED_STATUSES:
             if strat not in self._strategy_pending:
                 self._strategy_pending[strat] = set()
             self._strategy_pending[strat].add(oid)
-        else:
-            if strat in self._strategy_pending:
-                self._strategy_pending[strat].discard(oid)
         return data
 
     def get_cached_orders_snapshot(self) -> dict[str, Any]:
@@ -597,36 +622,35 @@ class GatewayEngine(BaseEngine):
             return
         oid = str(order_id)
         strat = strategy_name or "default"
-        if api_detail:
-            merged = self._merge_order_from_api(api_detail, strategy_name=strat)
-            # If the exchange immediately returns FILLED (common for MARKET),
-            # this order may never enter the polling loop (finished orders are not polled).
-            # Emit the update immediately so StrategyEngine holdings reflect reality.
-            if merged is not None and self.main_engine is not None:
-                try:
-                    if hasattr(self.main_engine, "strategy_engine"):
-                        self.main_engine.strategy_engine.on_order(merged)
-                    if hasattr(self.main_engine, "risk_engine"):
-                        self.main_engine.risk_engine.on_order(merged)
-                except Exception:
-                    pass
-        else:
-            data = OrderData(
-                order_id=oid,
-                symbol=str(symbol),
-                side=str(side or "").upper(),
-                quantity=float(quantity),
-                price=float(price),
-                status="NEW",
-                order_type=str(order_type or "LIMIT"),
-                filled_quantity=0.0,
-                filled_avg_price=0.0,
-                strategy_name=strat,
+        if not api_detail:
+            # Roostoo Public API (README.md) returns OrderDetail inside place_order response.
+            # If it's missing, we cannot reliably build the canonical OrderData mapping.
+            self.log(
+                f"WARN: register_order skipped | api_detail is None | oid={oid} symbol={symbol} strategy={strat}",
+                level="WARN",
+                source="Gateway",
             )
-            self._order_map[oid] = data
-            if strat not in self._strategy_pending:
-                self._strategy_pending[strat] = set()
-            self._strategy_pending[strat].add(oid)
+            return
+
+        merged = self._merge_order_from_api(api_detail, strategy_name=strat)
+        if merged is None:
+            self.log(
+                f"WARN: register_order | api_detail present but could not parse OrderID | oid={oid} strategy={strat}",
+                level="WARN",
+                source="Gateway",
+            )
+            return
+
+        # Emit immediately so StrategyEngine holdings reflect reality.
+        # For MARKET taker orders, they may never enter the polling loop.
+        if self.main_engine is not None:
+            try:
+                if hasattr(self.main_engine, "strategy_engine"):
+                    self.main_engine.strategy_engine.on_order(merged)
+                if hasattr(self.main_engine, "risk_engine"):
+                    self.main_engine.risk_engine.on_order(merged)
+            except Exception:
+                pass
 
     def get_pending_orders_by_symbol(self, strategy_name: str) -> dict[str, list[str]]:
         """

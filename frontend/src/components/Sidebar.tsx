@@ -1,5 +1,6 @@
 import { useEffect, useState, type FC } from 'react';
 import { api } from '../lib/api';
+import { formatEngineClock } from '../lib/engineTime';
 import type { Holding, RunningStrategy } from '../lib/types';
 
 export type Tab = 'Strategies' | 'Logs';
@@ -11,11 +12,10 @@ interface SidebarProps {
   backendOk: boolean;
   engineMode: string | null;
   systemRunning: boolean;
-  isAuthed: boolean;
   holdings: Record<string, Holding>;
   running: RunningStrategy[];
-  onAuthToken: (token: string | null) => void;
   onRefresh: () => Promise<void>;
+  onEngineStart: () => void;
 }
 
 export const Sidebar: FC<SidebarProps> = ({
@@ -25,11 +25,10 @@ export const Sidebar: FC<SidebarProps> = ({
   backendOk,
   engineMode,
   systemRunning,
-  isAuthed,
   holdings,
   running,
-  onAuthToken,
   onRefresh,
+  onEngineStart,
 }) => {
   const tabs: Tab[] = ['Strategies', 'Logs'];
   const [now, setNow] = useState<Date>(() => new Date());
@@ -41,7 +40,7 @@ export const Sidebar: FC<SidebarProps> = ({
 
   const clockText = (() => {
     try {
-      return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      return formatEngineClock(now);
     } catch {
       return '';
     }
@@ -98,66 +97,13 @@ export const Sidebar: FC<SidebarProps> = ({
           </div>
         </div>
         <div className="mb-4 space-y-2 text-xs text-white/70">
-          <div className="font-mono uppercase tracking-wide">Authentication</div>
-          {!isAuthed ? (
-            <form
-              className="flex flex-col gap-1.5"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const fd = new FormData(e.currentTarget);
-                const token = String(fd.get('admin_token') || '').trim();
-                if (!token) return
-                const ok = await api.checkAdmin(token)
-                if (ok) {
-                  onAuthToken(token)
-                } else {
-                  window.alert('Invalid admin token')
-                }
-              }}
-            >
-              <input
-                name="username"
-                type="text"
-                autoComplete="username"
-                className="hidden"
-              />
-              <input
-                name="admin_token"
-                type="password"
-                autoComplete="new-password"
-                placeholder="Admin token"
-                className="rounded-lg border border-white/20 bg-black/40 px-2 py-1.5 text-xs text-slate-50 outline-none ring-0 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40"
-              />
-              <button
-                type="submit"
-                className="inline-flex items-center justify-center rounded-lg border border-white/20 bg-white/10 px-2 py-1.5 text-xs font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/20"
-              >
-                Login
-              </button>
-            </form>
-          ) : (
-            <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/80 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-100">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                Logged in
-              </span>
-              <button
-                type="button"
-                className="rounded-lg border border-white/20 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:border-white/40 hover:bg-white/15"
-                onClick={() => onAuthToken(null)}
-              >
-                Logout
-              </button>
-            </div>
-          )}
-        </div>
-        <div className="mb-4 space-y-2 text-xs text-white/70">
           <div className="font-mono uppercase tracking-wide">Engine controls</div>
           <div className="flex flex-wrap gap-1.5">
             <button
               className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/20 bg-white/5 px-2 py-1.5 text-xs font-medium text-slate-50 transition hover:border-emerald-400/80 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={!isAuthed || systemRunning}
+              disabled={systemRunning}
               onClick={() => {
+                onEngineStart()
                 api.systemStart('mock').then(() => onRefresh()).catch(() => {})
               }}
             >
@@ -165,8 +111,9 @@ export const Sidebar: FC<SidebarProps> = ({
             </button>
             <button
               className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/20 bg-white/5 px-2 py-1.5 text-xs font-medium text-slate-50 transition hover:border-emerald-400/80 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={!isAuthed || systemRunning}
+              disabled={systemRunning}
               onClick={() => {
+                onEngineStart()
                 api.systemStart('real').then(() => onRefresh()).catch(() => {})
               }}
             >
@@ -174,7 +121,7 @@ export const Sidebar: FC<SidebarProps> = ({
             </button>
             <button
               className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-rose-400/80 bg-rose-500/10 px-2 py-1.5 text-xs font-medium text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={!isAuthed || !systemRunning}
+              disabled={!systemRunning}
               onClick={() => {
                 void (async () => {
                   const anyOpen = Object.values(holdings || {}).some((holding) => {
@@ -192,18 +139,7 @@ export const Sidebar: FC<SidebarProps> = ({
                     return
                   }
 
-                  const token =
-                    window.prompt(
-                      'This is a dangerous action.\n\nEnter admin code to proceed:',
-                    ) || ''
-                  const trimmed = token.trim()
-                  if (!trimmed) return
-                  const ok = await api.checkAdmin(trimmed)
-                  if (!ok) {
-                    window.alert('Invalid admin token')
-                    return
-                  }
-                  onAuthToken(trimmed)
+                  if (!window.confirm('Stop the engine? This is a destructive action.')) return
                   try {
                     await api.systemStop()
                     await onRefresh()
@@ -247,7 +183,10 @@ export const Sidebar: FC<SidebarProps> = ({
               {!backendOk ? 'Backend down' : systemRunning ? 'Engine running' : 'Engine stopped'}
             </div>
           </div>
-          <div className="select-none font-mono text-xs tracking-wide text-emerald-300">
+          <div
+            className="select-none font-mono text-xs tracking-wide text-emerald-300"
+            title="Singapore time (24-hour)"
+          >
             {clockText}
           </div>
         </div>

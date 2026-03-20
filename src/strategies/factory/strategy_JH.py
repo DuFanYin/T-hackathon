@@ -84,6 +84,14 @@ class StrategyJH(StrategyTemplate):
         self._state: dict[str, dict[str, Any]] = {}
         self._alloc_per_pair: float = self.capital / max(1, len(self.symbols))
 
+        self.write_log(
+            f"[strategy_JH] CONSTRUCT | pairs={len(self.symbols)} interval={self.interval.binance} "
+            f"timer_trigger={self._timer_trigger} pivot_len={self.pivot_len} atr_len={self.atr_len} "
+            f"rr={self.rr} fill_bars={self.fill_bars} capital=${self.capital:,.0f} risk_pct={self.risk_pct} "
+            f"alloc/pair=${self._alloc_per_pair:,.0f}",
+            level="INFO",
+        )
+
     def history_requirements(self) -> list[dict[str, object]]:
         ival = self.interval.binance
         # Need enough 15m bars for: pivot (2*pivot_len+1), ATR (atr_len+1), and prev3 pattern (4).
@@ -104,9 +112,27 @@ class StrategyJH(StrategyTemplate):
                 "pending_order_id": "",
                 "entry_price": 0.0,
             }
+        ival = self.interval.binance
+        need = max(4, 2 * int(self.pivot_len) + 1, int(self.atr_len) + 1)
+        me = getattr(self._main, "market_engine", None)
+        bar_samples: list[str] = []
+        if me:
+            for sym in self.symbols[:5]:
+                n = me.get_bar_count(sym, ival)
+                bar_samples.append(f"{sym}:{n}")
+            if len(self.symbols) > 5:
+                bar_samples.append(f"…+{len(self.symbols) - 5} more")
         self.write_log(
-            f"Init: {len(self.symbols)} pairs, ${self._alloc_per_pair:,.0f}/pair, "
-            f"interval={self.interval.binance} pivot={self.pivot_len} rr={self.rr} atr={self.atr_len} fill={self.fill_bars}",
+            f"[strategy_JH] INIT | reset per-symbol state ×{len(self.symbols)} | min_bars_needed={need} | "
+            f"bar_counts[{ival}]={', '.join(bar_samples) if bar_samples else 'n/a'}",
+            level="INFO",
+        )
+
+    def on_start_logic(self) -> None:
+        self.write_log(
+            f"[strategy_JH] START | timer fires every {self._timer_trigger} engine tick(s) "
+            f"→ on_timer_logic ~each {self._timer_trigger}s (default 1s/tick) | "
+            f"symbols={len(self.symbols)} interval={self.interval.binance}",
             level="INFO",
         )
 
@@ -387,8 +413,12 @@ class StrategyJH(StrategyTemplate):
         )
 
     def on_order(self, event: Any) -> None:
-        super().on_order(event)
         data = getattr(event, "data", event)
+        # Order events are broadcast to all strategies; ignore orders not belonging to this strategy.
+        order_strat = getattr(data, "strategy_name", None)
+        if order_strat is not None and order_strat != self.strategy_name:
+            return
+        super().on_order(event)
         symbol = str(getattr(data, "symbol", "") or "")
         side = str(getattr(data, "side", "") or "").upper()
         status = str(getattr(data, "status", "") or "").upper()

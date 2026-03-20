@@ -1,4 +1,5 @@
 import type { FC } from 'react';
+import { formatEngineDateTimeOrDash } from '../lib/engineTime';
 
 type OrderTrack = {
   order_id: string;
@@ -24,13 +25,7 @@ type CachedOrdersShape = {
 };
 
 function fmtTs(ts: number | null | undefined): string {
-  if (ts == null || !Number.isFinite(ts)) return '-';
-  const ms = ts < 1e12 ? ts * 1000 : ts; // assume seconds if < 1e12
-  try {
-    return new Date(ms).toLocaleString();
-  } catch {
-    return '-';
-  }
+  return formatEngineDateTimeOrDash(ts);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

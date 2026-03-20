@@ -94,6 +94,17 @@ class StrategyMaliki(StrategyTemplate):
         self._risk_state: dict[str, dict[str, float | int]] = {}
         # {coin: {"peak_price": float, "entry_tick": int, "entry_price": float}}
 
+        n_track = len(self.symbols)
+        self.write_log(
+            f"[strategy_maliki] CONSTRUCT | tracked_symbols={n_track} interval={self.interval.binance} "
+            f"timer_trigger={self._timer_trigger} lookback={self.lookback_candles} top_n={self.top_n} "
+            f"rebalance_every={self.rebalance_every} trail={self.trailing_stop_pct}% "
+            f"min_hold={self.min_hold_candles} regime_ma={self.regime_ma_candles} "
+            f"min_momentum={self.min_momentum_pct}% min_notional_24h=${self.min_notional_24h:,.0f} "
+            f"alloc=${self.capital_allocation:,.0f} max_single%={self.max_single_alloc_pct}",
+            level="INFO",
+        )
+
     def _format_pair(self, coin: str) -> str:
         """Format Roostoo pair for logging (e.g. 'BTC/USD')."""
         return f"{coin}/USD"
@@ -144,11 +155,18 @@ class StrategyMaliki(StrategyTemplate):
     # ──────────────────────────────────────────
 
     def on_init_logic(self) -> None:
+        reqs = self.history_requirements()
+        ival = self.interval.binance
+        me = getattr(self._main, "market_engine", None)
+        btc_n = me.get_bar_count("BTCUSDT", ival) if me else 0
+        sample_momo = 0
+        if me and self.symbols:
+            sample_momo = me.get_bar_count(self.symbols[0], ival)
         self.write_log(
-            f"strategy_maliki init: lookback={self.lookback_candles} "
-            f"top_n={self.top_n} rebal={self.rebalance_every} "
-            f"trail={self.trailing_stop_pct}% min_hold={self.min_hold_candles} "
-            f"regime_ma={self.regime_ma_candles} alloc=${self.capital_allocation:,.0f} ",
+            f"[strategy_maliki] INIT | history_requests={len(reqs)} | "
+            f"BTCUSDT bars={btc_n} (regime needs {self.regime_ma_candles}) | "
+            f"sample {self.symbols[0] if self.symbols else '?'} bars={sample_momo} (momentum needs {self.lookback_candles}) | "
+            f"top_n={self.top_n} rebal_every={self.rebalance_every} ticks",
             level="INFO",
         )
 
@@ -165,8 +183,16 @@ class StrategyMaliki(StrategyTemplate):
             reqs.append({"symbol": c, "interval": ival, "bars": lookback})
         return reqs
 
+    def on_start_logic(self) -> None:
+        self.write_log(
+            f"[strategy_maliki] START | timer every {self._timer_trigger} tick(s) "
+            f"→ rebalance check each {self.rebalance_every} strategy steps | "
+            f"interval={self.interval.binance} universe={len(self.symbols)} symbols",
+            level="INFO",
+        )
+
     def on_stop_logic(self) -> None:
-        self.write_log("strategy_maliki stopping — closing all positions", level="INFO")
+        self.write_log("[strategy_maliki] STOP | closing all positions", level="INFO")
         self.clear_all_positions()
 
     # ──────────────────────────────────────────

@@ -7,6 +7,7 @@ these simple data models as its `Event.data` payload.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping, Optional
@@ -65,6 +66,24 @@ class TradingPair:
     price_precision: int = 0
     amount_precision: int = 0
     mini_order: float = 0.0
+
+    @staticmethod
+    def quantize_to_decimal_places(value: float, decimals: int) -> float:
+        """
+        Round `value` to `decimals` fractional digits (half-up), matching exchange PricePrecision / AmountPrecision.
+        Used before place_order so payloads match Roostoo step rules from /v3/exchangeInfo.
+        """
+        d = int(decimals)
+        if d < 0:
+            return float(value)
+        factor = 10.0**d
+        return math.floor(float(value) * factor + 0.5) / factor
+
+    def quantize_quantity(self, quantity: float) -> float:
+        return self.quantize_to_decimal_places(float(quantity), int(self.amount_precision))
+
+    def quantize_price(self, price: float) -> float:
+        return self.quantize_to_decimal_places(float(price), int(self.price_precision))
 
     @classmethod
     def from_exchange_entry(cls, roostoo_pair: str, spec: Mapping[str, Any] | None, *, symbol: str) -> TradingPair:

@@ -6,6 +6,7 @@ These tests use real GatewayEngine/StrategyEngine plumbing with mocked market/AP
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -142,11 +143,12 @@ def test_integration_strategy_maliki_open_then_close_updates_holdings():
         )
         main.strategy_engine._strategies = [strat]
 
-        # Real market data path: anchor generated LIMIT around live price -10%.
+        # Real market data path: seeded bar closes drive maliki's LIMIT buy (close * 1.001).
+        # `round(btc_px/1k)*1k` can round DOWN vs live ticker, leaving limit below market →
+        # BUY stays PENDING, no BTC settles, MARKET SELL then fails. Ceil keeps limit >= live.
         btc_px = _live_price_from_gateway(main, "BTCUSDT")
-        # Use a step-friendly anchor so LIMIT (price * 1.001) lands on an integer.
-        # Example: 71000 * 1.001 = 71071 (integer), which satisfies strict step rules.
-        btc_base = round(btc_px / 1000.0) * 1000.0
+        # Step-friendly anchor so LIMIT (price * 1.001) lands on an integer and crosses the book.
+        btc_base = math.ceil(btc_px / 1000.0) * 1000.0
         _seed_bars(
             main.market_engine,
             "BTCUSDT",

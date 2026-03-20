@@ -5,14 +5,12 @@ import type { Holding, RunningStrategy } from '../lib/types';
 interface StrategiesPanelProps {
   running: RunningStrategy[];
   holdings: Record<string, Holding>;
-  isAuthed: boolean;
   onRefresh: () => Promise<void>;
 }
 
 export const StrategiesPanel: FC<StrategiesPanelProps> = ({
   running,
   holdings,
-  isAuthed,
   onRefresh,
 }) => {
   const getErrorMessage = (error: unknown): string =>
@@ -51,7 +49,7 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
       <div className="flex flex-1 flex-wrap items-center gap-1.5">
         <button
           className="inline-flex items-center justify-center gap-1 rounded border border-emerald-400/80 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={!isAuthed || !selectedName || busy === 'start' || startingNames.has(selectedName)}
+          disabled={!selectedName || busy === 'start' || startingNames.has(selectedName)}
           onClick={async () => {
             if (!selectedName) return
             setBusy('start')
@@ -81,7 +79,7 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
         </button>
         <button
           className="inline-flex items-center justify-center gap-1 rounded border border-rose-400/80 bg-rose-500/10 px-2 py-1 text-xs font-medium text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={!isAuthed || !selectedName || busy === selectedName}
+          disabled={!selectedName || busy === selectedName}
           onClick={() => {
             if (selectedHasOpenPos) {
               window.alert('Cannot stop strategy while positions are open. Click “Close pos” first.')
@@ -107,7 +105,7 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
         <div className="ml-auto flex items-center gap-1.5">
           <button
             className="inline-flex items-center justify-center gap-1 rounded border border-amber-400/80 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-100 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!isAuthed || !selectedName || busy === `${selectedName}-close`}
+            disabled={!selectedName || busy === `${selectedName}-close`}
             onClick={() => {
               void (async () => {
                 setBusy(`${selectedName}-close`)
@@ -128,7 +126,7 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
           </button>
           <button
             className="inline-flex items-center justify-center gap-1 rounded border border-amber-400/50 bg-amber-500/5 px-2 py-1 text-xs font-medium text-amber-100 transition hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!isAuthed || running.length === 0 || busy === 'close-all'}
+            disabled={running.length === 0 || busy === 'close-all'}
             onClick={() => {
               void (async () => {
                 setBusy('close-all')

@@ -12,7 +12,7 @@ type ParsedLogLine = {
   msg: string;
 };
 
-/** Parse line: "MM-DD HH:MM:SS | LEVEL | source | message" or legacy formats */
+/** Parse line: "MM-DD HH:MM:SS | LEVEL | source | message" (SGT, 24h from backend) or legacy formats */
 function parseLogLine(line: string): ParsedLogLine {
   const raw = line.trim();
   if (!raw) {
@@ -76,11 +76,44 @@ function uniqueSources(logs: string[]): string[] {
   return list;
 }
 
+function getSgtNowYear(now: Date): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-SG', {
+      timeZone: 'Asia/Singapore',
+      year: 'numeric',
+    }).formatToParts(now);
+    const yearPart = parts.find((p) => p.type === 'year');
+    if (yearPart?.value) return Number(yearPart.value);
+  } catch {
+    // ignore
+  }
+  return now.getFullYear();
+}
+
+/**
+ * Convert backend log timestamp prefix: "MM-DD HH:MM:SS" (Singapore time) to epoch ms.
+ * Assumes fixed Singapore offset UTC+8 (no DST).
+ */
+function parseLogTimestampPrefixToEpochMs(ts: string, sgtYear: number): number | null {
+  const m = ts.match(/^(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  const hh = Number(m[3]);
+  const mm = Number(m[4]);
+  const ss = Number(m[5]);
+  if (![month, day, hh, mm, ss].every((x) => Number.isFinite(x))) return null;
+  const utcMs = Date.UTC(sgtYear, month - 1, day, hh, mm, ss);
+  // SGT = UTC+8 ⇒ UTC = SGT - 8 hours
+  return utcMs - 8 * 60 * 60 * 1000;
+}
+
 interface LogsPanelProps {
   logs: string[];
   onTail: () => void;
   onClear: () => void;
   logBoxRef: MutableRefObject<HTMLDivElement | null>;
+  logStartEpochMs: number | null;
 }
 
 export const LogsPanel: FC<LogsPanelProps> = ({
@@ -88,13 +121,27 @@ export const LogsPanel: FC<LogsPanelProps> = ({
   onTail,
   onClear,
   logBoxRef,
+  logStartEpochMs,
 }) => {
   const [levelFilter, setLevelFilter] = useState<LogLevel | 'ALL'>('ALL');
   const [sourceFilter, setSourceFilter] = useState<string>('ALL');
 
-  const sources = useMemo(() => uniqueSources(logs), [logs]);
+  const sgtNowYear = useMemo(() => getSgtNowYear(new Date()), []);
 
-  const filteredLogs = logs.filter((line) => {
+  const timeFilteredLogs = useMemo(() => {
+    if (logStartEpochMs == null) return logs;
+    return logs.filter((line) => {
+      const { timestamp } = parseLogLine(line);
+      if (!timestamp) return false;
+      const epoch = parseLogTimestampPrefixToEpochMs(timestamp, sgtNowYear);
+      if (epoch == null) return false;
+      return epoch >= logStartEpochMs;
+    });
+  }, [logs, logStartEpochMs, sgtNowYear]);
+
+  const sources = useMemo(() => uniqueSources(timeFilteredLogs), [timeFilteredLogs]);
+
+  const filteredLogs = timeFilteredLogs.filter((line) => {
     const { level, source } = parseLogLine(line);
     return levelPassesFilter(level, levelFilter) && sourcePassesFilter(source, sourceFilter);
   });
@@ -110,7 +157,12 @@ export const LogsPanel: FC<LogsPanelProps> = ({
     return (
       <div key={idx} className="flex items-start gap-3 text-xs">
         {timestamp && (
-          <span className="shrink-0 font-mono text-emerald-300">{timestamp}</span>
+          <span
+            className="shrink-0 font-mono text-emerald-300"
+            title="Singapore time (24-hour)"
+          >
+            {timestamp}
+          </span>
         )}
         <span className={`shrink-0 w-12 font-mono text-xs uppercase ${colorClass}`}>
           {level}

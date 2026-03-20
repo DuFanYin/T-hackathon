@@ -13,6 +13,7 @@ from src.utilities.object import (
     PositionData,
     StrategyHolding,
     SymbolData,
+    TradingPair,
 )
 
 
@@ -133,3 +134,66 @@ class TestSymbolData:
         sd = SymbolData(symbol="BTCUSDT", last_price=50000.0)
         assert sd.symbol == "BTCUSDT"
         assert sd.last_price == 50000.0
+
+
+class TestTradingPairQuantize:
+    """Rounding for place_order using exchangeInfo precisions."""
+
+    def test_quantize_to_decimal_places(self):
+        assert TradingPair.quantize_to_decimal_places(1.23456, 2) == 1.23
+        assert TradingPair.quantize_to_decimal_places(1.23556, 2) == 1.24
+        assert TradingPair.quantize_to_decimal_places(0.000123456, 5) == 0.00012
+
+    def test_quantize_quantity_and_price(self):
+        tp = TradingPair(
+            pair="BTC/USD",
+            symbol="BTCUSDT",
+            price_precision=2,
+            amount_precision=5,
+        )
+        assert tp.quantize_quantity(0.010000099) == 0.01
+        assert tp.quantize_price(50123.456) == 50123.46
+
+
+class TestGatewayPlaceOrderQuantize:
+    """GatewayEngine.place_order snaps qty/price using cached TradingPair (exchangeInfo)."""
+
+    def test_place_order_rounds_payload(self):
+        from src.engines.engine_gateway import GatewayEngine
+
+        gw = GatewayEngine(main_engine=None, env_mode="mock")
+        gw.trading_pairs_by_symbol["ETHUSDT"] = TradingPair(
+            pair="ETH/USD",
+            symbol="ETHUSDT",
+            price_precision=2,
+            amount_precision=4,
+        )
+        captured: dict = {}
+
+        def capture_post(path, data, signed):
+            captured["path"] = path
+            captured["data"] = dict(data)
+            captured["signed"] = signed
+            return {"Success": True}
+
+        gw._request_post = capture_post  # type: ignore[method-assign]
+
+        gw.place_order("ETHUSDT", "BUY", 1.23456789, price=3000.999, order_type="LIMIT")
+        assert captured["data"]["quantity"] == 1.2346
+        assert captured["data"]["price"] == 3001.0
+        assert captured["data"]["type"] == "LIMIT"
+
+    def test_unknown_symbol_no_rounding(self):
+        from src.engines.engine_gateway import GatewayEngine
+
+        gw = GatewayEngine(main_engine=None, env_mode="mock")
+        seen: dict = {}
+
+        def cap(path, data, signed):
+            seen.update(dict(data))
+            return {"Success": True}
+
+        gw._request_post = cap  # type: ignore[method-assign]
+        gw.place_order("XYZUSDT", "SELL", 1.234567, price=99.8765, order_type="LIMIT")
+        assert seen["quantity"] == 1.234567
+        assert seen["price"] == 99.8765

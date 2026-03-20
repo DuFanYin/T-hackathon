@@ -20,12 +20,6 @@ import type {
   SystemStatus,
 } from './types';
 
-let ADMIN_TOKEN: string | null = null;
-
-export function setAdminToken(token: string | null) {
-  ADMIN_TOKEN = token;
-}
-
 const API_BASE =
   import.meta.env?.VITE_API_BASE?.toString?.() || 'http://localhost:8000';
 
@@ -36,7 +30,6 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   // Only set Content-Type when we actually send a body.
   // Setting it on GET triggers CORS preflight (OPTIONS) unnecessarily.
   if (hasBody && method !== 'GET') headers['Content-Type'] = 'application/json';
-  if (ADMIN_TOKEN) headers['x-admin-token'] = ADMIN_TOKEN;
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -54,16 +47,6 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   baseUrl: API_BASE,
-  checkAdmin: async (token: string): Promise<boolean> => {
-    try {
-      await http<{ ok: boolean }>('/auth/check', {
-        headers: { 'x-admin-token': token },
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  },
   systemStatus: () => http<SystemStatus>('/system/status'),
   systemStart: (mode: 'mock' | 'real') =>
     http<SystemStatus>('/system/start', { method: 'POST', body: JSON.stringify({ mode }) }),
@@ -109,4 +92,3 @@ export const api = {
     return http<OrdersResponse>(`/orders${qs ? `?${qs}` : ''}`)
   },
 };
-

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.control.engine_manager import EngineManager, Mode
@@ -59,27 +58,11 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         allow_headers=["*"],
     )
 
-    admin_token_env = str(getattr(os_mod, "getenv")("CONTROL_ADMIN_TOKEN", "")).strip() or None
-
-    def _require_admin(x_admin_token: str | None = Header(default=None, alias="x-admin-token")) -> None:
-        """
-        Simple shared-token guard for mutating endpoints.
-        If CONTROL_ADMIN_TOKEN is not set, all calls are allowed (dev mode).
-        """
-        if admin_token_env is None:
-            return
-        if not x_admin_token or x_admin_token != admin_token_env:
-            raise HTTPException(status_code=401, detail="admin token required")
-
     def _eng():
         try:
             return engine_manager.require()
         except Exception as e:
             raise HTTPException(status_code=503, detail=str(e))
-
-    @app.get("/auth/check")
-    def auth_check(_: None = Depends(_require_admin)):
-        return {"ok": True}
 
     @app.get("/system/status")
     def system_status():
@@ -87,7 +70,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"running": st.running, "mode": st.mode}
 
     @app.post("/system/start")
-    def system_start(payload: dict[str, Any], _: None = Depends(_require_admin)):
+    def system_start(payload: dict[str, Any]):
         mode = str(payload.get("mode", "")).strip().lower()
         if mode not in ("mock", "real"):
             raise HTTPException(status_code=400, detail="mode must be mock or real")
@@ -95,7 +78,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"running": st.running, "mode": st.mode}
 
     @app.post("/system/stop")
-    def system_stop(_: None = Depends(_require_admin)):
+    def system_stop():
         try:
             st = engine_manager.stop()
             return {"running": st.running, "mode": st.mode}
@@ -121,23 +104,23 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
     # ------------------------------------------------------------------
 
     @app.get("/account/balance")
-    def account_balance(_: None = Depends(_require_admin)):
+    def account_balance():
         main_engine = _eng()
         return {"balance": main_engine.gateway_engine.get_cached_balance()}
 
     @app.get("/account/pending_count")
-    def account_pending_count(_: None = Depends(_require_admin)):
+    def account_pending_count():
         main_engine = _eng()
         return {"pending_count": main_engine.gateway_engine.get_cached_pending_count()}
 
     @app.get("/account/orders")
-    def account_orders(pending_only: bool = True, limit: int = 200, _: None = Depends(_require_admin)):
+    def account_orders(pending_only: bool = True, limit: int = 200):
         main_engine = _eng()
         # Cached snapshot only (UI must not trigger exchange calls).
         return {"orders": main_engine.gateway_engine.get_cached_orders_snapshot()}
 
     @app.get("/account/pnl")
-    def account_pnl(_: None = Depends(_require_admin)):
+    def account_pnl():
         """Current equity, PnL and PnL % from risk engine."""
         main_engine = _eng()
         risk = getattr(main_engine, "risk_engine", None)
@@ -154,7 +137,6 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         strategy: str | None = None,
         symbol: str | None = None,
         limit: int = 500,
-        _: None = Depends(_require_admin),
     ):
         """
         Read orders from the local SQLite store (latest row per order_id).
@@ -184,7 +166,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"running": items}
 
     @app.post("/strategies/start")
-    def strategy_start(payload: dict[str, Any], _: None = Depends(_require_admin)):
+    def strategy_start(payload: dict[str, Any]):
         main_engine = _eng()
         # Accept either {name} (preferred) or legacy {strategy} (mapped to name).
         name = str(payload.get("name", "")).strip()
@@ -205,7 +187,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"ok": True, "name": name}
 
     @app.post("/strategies/stop")
-    def strategy_stop(payload: dict[str, Any], _: None = Depends(_require_admin)):
+    def strategy_stop(payload: dict[str, Any]):
         main_engine = _eng()
         name = str(payload.get("name", "")).strip()
         if not name:
@@ -226,7 +208,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"holdings": out}
 
     @app.post("/positions/close")
-    def close_strategy_positions(payload: dict[str, Any], _: None = Depends(_require_admin)):
+    def close_strategy_positions(payload: dict[str, Any]):
         """
         Close (flatten) all positions for one strategy.
 
@@ -248,7 +230,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"ok": True, "name": name}
 
     @app.post("/positions/close_all")
-    def close_all_positions(_: None = Depends(_require_admin)):
+    def close_all_positions():
         """
         Close (flatten) all positions for all registered strategies.
         """

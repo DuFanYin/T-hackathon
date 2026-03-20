@@ -38,6 +38,8 @@ class MarketEngine(BaseEngine):
         self._bar_count: Dict[str, int] = {}
         # Throttle map for Binance klines per interval string (e.g. "5m")
         self._last_binance_fetch: Dict[str, float] = {}
+        # Log TIMER "no symbols" WARN at most once until we see a non-empty universe.
+        self._warned_timer_no_symbols: bool = False
 
     # ---------- lifecycle ----------
 
@@ -50,11 +52,19 @@ class MarketEngine(BaseEngine):
         """
         me = self.main_engine
         if me is None:
+            self.log("[Market] TIMER | skip: main_engine not attached", level="WARN")
             return
 
         symbols: List[str] = getattr(me, "active_pairs", None) or getattr(me, "trading_pairs", []) or []
         if not symbols:
+            if not self._warned_timer_no_symbols:
+                self.log(
+                    "[Market] TIMER | skip: no active_pairs or trading_pairs — Binance poll deferred",
+                    level="WARN",
+                )
+                self._warned_timer_no_symbols = True
             return
+        self._warned_timer_no_symbols = False
 
         intervals: set[Interval] = set()
         if hasattr(me, "strategy_engine") and me.strategy_engine is not None:
@@ -77,6 +87,10 @@ class MarketEngine(BaseEngine):
         """Update bar buffer and SymbolData from EVENT_BAR payload (BarData)."""
         data = getattr(event, "data", event)
         if not isinstance(data, BarData):
+            self.log(
+                f"[Market] on_bar | skip: payload is not BarData ({type(data).__name__})",
+                level="DEBUG",
+            )
             return
         self.add_bar(data)
         existing = self._symbols.get(data.symbol)
@@ -161,13 +175,27 @@ class MarketEngine(BaseEngine):
         This pre-creates bar buffers and counters for the given symbols, but does not
         clear existing data. Bars are still accepted lazily for any symbol.
         """
+        n_new = 0
         for symbol in symbols:
             key = self._bar_key(symbol, "5m")
             if key not in self._bars:
                 self._bars[key] = deque(maxlen=self._max_bars_per_symbol)
+                n_new += 1
             if key not in self._bar_count:
                 self._bar_count[key] = 0
             self._sync_trading_pair_rules(symbol)
+        # `symbols` is the input list for this call. StrategyEngine usually calls
+        # set_symbols([sym]) per symbol, so len(symbols) is often 1 and is NOT the
+        # number of symbols currently tracked.
+        if n_new > 0:
+            tracked_symbols = len(self.get_cached_symbols())
+            shown = list(symbols)
+            symbols_txt = ", ".join(shown[:5]) + (", …" if len(shown) > 5 else "")
+            self.log(
+                f"[Market] SET_SYMBOLS | input={len(symbols)} new_5m_buffers={n_new} "
+                f"tracked_symbols={tracked_symbols} ({symbols_txt})",
+                level="INFO",
+            )
 
     # ---------- bars and indicators ----------
 
@@ -235,8 +263,16 @@ class MarketEngine(BaseEngine):
             return have
 
         maxlen = max(self._max_bars_per_symbol, need, have)
+        self.log(
+            f"[Market] ENSURE_HISTORY | {sym} {ival} | fetching from Binance (have={have} need={need})",
+            level="DEBUG",
+        )
         klines = self._fetch_binance_klines(sym, ival, limit=need)
         if not klines:
+            self.log(
+                f"[Market] ENSURE_HISTORY | {sym} {ival} | WARN empty klines response (still have={have})",
+                level="WARN",
+            )
             return have
 
         out: list[BarData] = []
@@ -267,6 +303,10 @@ class MarketEngine(BaseEngine):
             )
 
         if not out:
+            self.log(
+                f"[Market] ENSURE_HISTORY | {sym} {ival} | WARN parsed 0 bars from klines payload",
+                level="WARN",
+            )
             return have
 
         # Replace the deque with a larger buffer so strategies can compute long MAs, etc.
@@ -281,22 +321,41 @@ class MarketEngine(BaseEngine):
         except Exception:
             pass
 
-        return len(self._bars[key])
+        buf_len = len(self._bars[key])
+        self.log(
+            f"[Market] ENSURE_HISTORY | {sym} {ival} | OK bars_loaded={len(out)} buffer_len={buf_len} last_close={float(out[-1].close):.8g}",
+            level="DEBUG",
+        )
+        return buf_len
 
-    @staticmethod
-    def _fetch_binance_klines(symbol: str, interval: str, *, limit: int) -> list:
+    def _fetch_binance_klines(self, symbol: str, interval: str, *, limit: int) -> list:
         params = {
             "symbol": symbol,
             "interval": interval,
             "limit": max(1, min(int(limit), 1000)),
         }
+        url = f"{BINANCE_URL}/api/v3/klines"
         try:
-            resp = requests.get(f"{BINANCE_URL}/api/v3/klines", params=params, timeout=8.0)
+            resp = requests.get(url, params=params, timeout=8.0)
             if resp.status_code != 200:
+                self.log(
+                    f"[Market] BINANCE_KLINES | {symbol} {interval} | HTTP {resp.status_code} (limit={params['limit']})",
+                    level="WARN",
+                )
                 return []
             body = resp.json()
-            return body if isinstance(body, list) else []
-        except Exception:
+            if not isinstance(body, list):
+                self.log(
+                    f"[Market] BINANCE_KLINES | {symbol} {interval} | WARN non-list JSON body",
+                    level="WARN",
+                )
+                return []
+            return body
+        except Exception as e:
+            self.log(
+                f"[Market] BINANCE_KLINES | {symbol} {interval} | ERROR {type(e).__name__}: {e}",
+                level="WARN",
+            )
             return []
 
     def get_atr(self, symbol: str, atr_len: int = 14, interval: str = "5m") -> float:
@@ -374,15 +433,14 @@ class MarketEngine(BaseEngine):
             return
         self._last_binance_fetch[ival_str] = now
 
+        # Keep refresh logs low-volume to avoid flooding (only WARN when something is off).
+        ok = 0
+        failed = 0
         for symbol in symbols:
-            params = {
-                "symbol": symbol,
-                "interval": ival_str,
-                "limit": limit,
-            }
             try:
                 klines = self._fetch_binance_klines(symbol, ival_str, limit=limit)
                 if not klines:
+                    failed += 1
                     continue
                 k = klines[-1]
                 try:
@@ -392,9 +450,11 @@ class MarketEngine(BaseEngine):
                     close = float(k[4])
                     volume = float(k[5])
                 except Exception:
+                    failed += 1
                     continue
 
                 if close <= 0:
+                    failed += 1
                     continue
 
                 bar = BarData(
@@ -409,5 +469,12 @@ class MarketEngine(BaseEngine):
                 )
                 # Reuse on_bar so SymbolData & buffers stay consistent.
                 self.on_bar(bar)
+                ok += 1
             except Exception:
+                failed += 1
                 continue
+        lvl = "INFO" if failed == 0 else "WARN"
+        self.log(
+            f"[Market] BINANCE_REFRESH | interval={ival_str} | applied_last_bar ok={ok} failed={failed}/{len(symbols)}",
+            level="DEBUG" if failed == 0 else lvl,
+        )
