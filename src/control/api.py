@@ -252,7 +252,7 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
         return {"ok": True, "closed": closed, "errors": errors}
 
     @app.get("/logs/tail")
-    def logs_tail(n: int = 200):
+    def logs_tail(n: int = 1000):
         """Read last n lines from log file. Works even when engine is stopped."""
         log_file = (os.getenv("LOG_FILE") or "data/logs/system.log").strip()
         try:

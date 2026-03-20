@@ -78,7 +78,7 @@ export const api = {
     http<CloseAllPositionsResponse>('/positions/close_all', {
       method: 'POST',
     }),
-  logsTail: (n = 200) => http<LogsTailResponse>(`/logs/tail?n=${n}`),
+  logsTail: (n = 1000) => http<LogsTailResponse>(`/logs/tail?n=${n}`),
   accountBalance: () => http<AccountBalanceResponse>('/account/balance'),
   accountPendingCount: () => http<AccountPendingCountResponse>('/account/pending_count'),
   accountPnl: () => http<AccountPnlResponse>('/account/pnl'),

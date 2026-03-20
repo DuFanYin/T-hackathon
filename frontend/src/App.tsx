@@ -42,7 +42,7 @@ function AppShell() {
   const [accountErr, setAccountErr] = useState<string>('')
 
   const LOGS_CACHE_KEY = 't_logs_cache'
-  const LOGS_CACHE_MAX = 500
+  const LOGS_CACHE_MAX = 1000
   const LOG_START_EPOCH_KEY = 't_log_start_epoch_ms'
 
   const [logs, setLogs] = useState<string[]>(() => {
@@ -129,7 +129,7 @@ function AppShell() {
   }, [])
 
   async function refreshLogs() {
-    api.logsTail(200).then((r) => setLogs(r.lines)).catch(() => setLogs([]))
+    api.logsTail().then((r) => setLogs(r.lines)).catch(() => setLogs([]))
   }
 
   useEffect(() => {
