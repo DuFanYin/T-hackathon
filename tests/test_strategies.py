@@ -82,7 +82,7 @@ class TestStrategyJH:
         assert strat.rr == 2.0
         assert strat.atr_len == 14
         assert strat.fill_bars == 1
-        assert strat.capital == 150_000.0
+        assert strat.capital == 20_000.0
         assert strat.risk_pct == 0.01
 
     def test_history_requirements(self):
@@ -124,16 +124,14 @@ class TestStrategyMaliki:
         assert strat.rebalance_every == 24
         assert strat.trailing_stop_pct == 5.0
 
-    def test_format_order_symbol_gateway(self):
+    def test_symbol_to_coin_internal_only(self):
+        # Strategy is expected to use system internal symbol format (e.g. BTCUSDT).
+        assert StrategyMaliki._symbol_to_coin("BTCUSDT") == "BTC"
+        assert StrategyMaliki._symbol_to_coin("ETHUSDT") == "ETH"
         main = _main_engine_mock()
-        strat = StrategyMaliki(main, "maliki", setting={"order_symbol_format": "gateway"})
-        assert strat._format_order_symbol("BTC") == "BTCUSDT"
+        strat = StrategyMaliki(main, "maliki", setting={})
+        # Logging pair formatting is still derived from base coin.
         assert strat._format_pair("BTC") == "BTC/USD"
-
-    def test_format_order_symbol_slash(self):
-        main = _main_engine_mock()
-        strat = StrategyMaliki(main, "maliki", setting={"order_symbol_format": "slash"})
-        assert strat._format_order_symbol("BTC") == "BTC/USD"
 
     def test_history_requirements(self):
         main = _main_engine_mock()

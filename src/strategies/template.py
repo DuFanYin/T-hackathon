@@ -4,12 +4,13 @@ Strategy template: lifecycle and helpers for timer-driven strategies (OTrader-st
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from src.utilities.events import EVENT_LOG
 from src.utilities.intents import INTENT_PLACE_ORDER
 from src.utilities.interval import Interval
-from src.utilities.object import LogData, OrderRequest
+from src.utilities.object import LogData, OrderRequest, SymbolData, TradingPair
 
 if TYPE_CHECKING:
     from src.engines.engine_main import MainEngine
@@ -42,18 +43,35 @@ class StrategyTemplate:
 
     @staticmethod
     def _parse_symbols(setting: dict[str, Any]) -> list[str]:
-        raw = setting.get("symbols")
-        if isinstance(raw, list):
-            items = [str(s).strip().upper() for s in raw if str(s).strip()]
+        """
+        Parse strategy symbol universe.
+
+        Simplified contract: strategies must provide internal MarketEngine symbols
+        (e.g. `BTCUSDT`) via either `setting["symbols"]` (list) or `setting["symbol"]` (single).
+        """
+
+        def normalize_one(x: Any) -> str:
+            s = str(x or "").strip().upper()
+            if not s:
+                return ""
+            # Reject vendor formats early (e.g. BTC/USD).
+            if "/" in s:
+                raise ValueError(f"Unsupported symbol format {s!r}; expected internal like 'BTCUSDT'.")
+            if not s.endswith("USDT"):
+                raise ValueError(f"Unsupported symbol format {s!r}; expected internal like 'BTCUSDT'.")
+            return s
+
+        raw_symbols = setting.get("symbols")
+        if isinstance(raw_symbols, list):
+            items = [normalize_one(s) for s in raw_symbols]
+            items = [x for x in items if x]
             return sorted(set(items))
-        if isinstance(raw, str):
-            # Allow "BTCUSDT,ETHUSDT" or "BTCUSDT ETHUSDT"
-            parts = [p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()]
-            return sorted(set(parts))
+
         one = setting.get("symbol")
         if one is not None:
-            s = str(one).strip().upper()
+            s = normalize_one(one)
             return [s] if s else []
+
         return []
 
     def iter_symbols(self) -> list[str]:
@@ -153,6 +171,71 @@ class StrategyTemplate:
     def write_log(self, msg: str, level: str = "INFO") -> None:
         self._main.put_event(EVENT_LOG, LogData(msg=msg, level=level, source=self.strategy_name))
 
+    @staticmethod
+    def _coerce_nonneg_int(x: Any) -> int | None:
+        if x is None or isinstance(x, bool):
+            return None
+        try:
+            v = int(float(x))
+            return v if v >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _quantize_to_decimals(value: float, decimals: int) -> float:
+        """Round to `decimals` fractional digits (exchange price / amount step)."""
+        d = int(decimals)
+        if d < 0:
+            return float(value)
+        factor = 10.0**d
+        return math.floor(float(value) * factor + 0.5) / factor
+
+    def _prepare_order_for_exchange(
+        self,
+        symbol: str,
+        quantity: float,
+        price: float | None,
+        order_type: str,
+    ) -> tuple[float, float, str] | None:
+        """
+        Snap qty/price to exchange step sizes when we have TradingPair or SymbolData precisions.
+        Returns None only if rounded quantity is non-positive.
+        """
+        sym = str(symbol).strip().upper()
+        sd = self.get_symbol(sym)
+
+        tp: TradingPair | None = None
+        if hasattr(self._main, "get_trading_pair"):
+            raw_tp = self._main.get_trading_pair(sym)
+            if isinstance(raw_tp, TradingPair):
+                tp = raw_tp
+
+        amt_dec: int | None = self._coerce_nonneg_int(tp.amount_precision) if tp is not None else None
+        if amt_dec is None and isinstance(sd, SymbolData):
+            amt_dec = self._coerce_nonneg_int(sd.amount_precision)
+        px_dec: int | None = self._coerce_nonneg_int(tp.price_precision) if tp is not None else None
+        if px_dec is None and isinstance(sd, SymbolData):
+            px_dec = self._coerce_nonneg_int(sd.price_precision)
+
+        ot = str(order_type or "LIMIT").upper()
+        if amt_dec is None:
+            qty = float(quantity)
+        else:
+            qty = self._quantize_to_decimals(float(quantity), amt_dec)
+
+        lim_price: float
+        if ot == "MARKET":
+            lim_price = 0.0
+        else:
+            lim_price = float(price if price is not None else 0.0)
+            if lim_price > 0 and px_dec is not None:
+                lim_price = self._quantize_to_decimals(lim_price, px_dec)
+
+        if qty <= 0:
+            return None
+
+        return qty, lim_price, ot
+
     def send_order(
         self,
         symbol: str,
@@ -161,8 +244,12 @@ class StrategyTemplate:
         price: float,
         order_type: str = "LIMIT",
     ) -> str | None:
+        prepared = self._prepare_order_for_exchange(symbol, quantity, price, order_type)
+        if prepared is None:
+            return None
+        quantity, price, order_type = prepared
         req = OrderRequest(
-            symbol=symbol,
+            symbol=str(symbol).strip().upper(),
             side=side,
             quantity=quantity,
             price=price,

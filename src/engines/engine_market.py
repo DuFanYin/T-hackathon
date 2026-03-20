@@ -89,6 +89,7 @@ class MarketEngine(BaseEngine):
         else:
             existing.last_price = data.close
             existing.ts = data.ts
+        self._sync_trading_pair_rules(data.symbol)
 
     def get_symbol(self, symbol: str) -> SymbolData | None:
         """Return cached SymbolData for the symbol (last_price from latest bar close)."""
@@ -137,6 +138,21 @@ class MarketEngine(BaseEngine):
             existing.notional_24h = float(notional_24h)
         if change_24h is not None:
             existing.change_24h = float(change_24h)
+        self._sync_trading_pair_rules(symbol)
+
+    def _sync_trading_pair_rules(self, symbol: str) -> None:
+        me = self.main_engine
+        if me is None:
+            return
+        tp = getattr(me, "trading_pairs_by_symbol", {}).get(symbol)
+        if tp is None:
+            return
+        sd = self._symbols.get(symbol)
+        if sd is None:
+            return
+        sd.price_precision = tp.price_precision
+        sd.amount_precision = tp.amount_precision
+        sd.min_order_notional = tp.mini_order
 
     def set_symbols(self, symbols: List[str]) -> None:
         """
@@ -151,6 +167,7 @@ class MarketEngine(BaseEngine):
                 self._bars[key] = deque(maxlen=self._max_bars_per_symbol)
             if key not in self._bar_count:
                 self._bar_count[key] = 0
+            self._sync_trading_pair_rules(symbol)
 
     # ---------- bars and indicators ----------
 

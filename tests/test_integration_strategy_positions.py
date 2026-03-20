@@ -121,7 +121,7 @@ def test_integration_strategy_maliki_open_then_close_updates_holdings():
 
     main.gateway_engine.place_order = _trace_place
     old_tracked = list(strategy_maliki_module.TRACKED_COINS)
-    strategy_maliki_module.TRACKED_COINS = ["BTC"]
+    strategy_maliki_module.TRACKED_COINS = ["BTCUSDT"]
     try:
         strat = StrategyMaliki(
             main,

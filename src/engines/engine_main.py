@@ -16,6 +16,7 @@ from .engine_risk import RiskEngine
 from .engine_strategy import AVAILABLE_STRATEGIES, StrategyEngine
 from src.control.log_store import LogStore
 from src.control.order_store import OrderStore
+from src.utilities.object import TradingPair
 
 
 class MainEngine:
@@ -28,7 +29,8 @@ class MainEngine:
     ) -> None:
         # Always rely on remote discovery for *available* trading pairs; start empty here.
         # Note: we do NOT subscribe market polling to all available pairs (too slow).
-        self.trading_pairs: list[str] = []  # available pairs discovered from exchangeInfo
+        self.trading_pairs: list[str] = []  # internal symbols (same order as discovery)
+        self.trading_pairs_by_symbol: dict[str, TradingPair] = {}  # cached exchangeInfo rules per symbol
         self.active_pairs: list[str] = []  # pairs actively traded/polled (added when strategies are added)
         self.env_mode: str = env_mode.strip().lower() if env_mode else "mock"
         self.log_store: LogStore = LogStore()
@@ -48,7 +50,7 @@ class MainEngine:
         self.risk_engine = RiskEngine(main_engine=self)
         self.write_log("init: engines constructed", level="INFO", source="System")
 
-        # One-time discovery of tradable pairs from the exchange; cache the AVAILABLE list only.
+        # One-time discovery: cache TradingPair per symbol + mirror symbol list for polling/ticker.
         try:
             self.write_log("init: discovering trading pairs via /v3/exchangeInfo", level="INFO", source="System")
             info = self.gateway_engine.get_exchange_info()
@@ -58,14 +60,18 @@ class MainEngine:
                 if isinstance(trade_pairs, dict):
                     from .engine_gateway import GatewayEngine as _GW
 
-                    for pair in trade_pairs.keys():
-                        symbol = _GW._from_roostoo_pair(str(pair))
-                        if symbol and symbol not in pairs:
-                            pairs.append(symbol)
+                    for pair_key, spec in trade_pairs.items():
+                        symbol = _GW._from_roostoo_pair(str(pair_key))
+                        if not symbol or symbol in pairs:
+                            continue
+                        self.trading_pairs_by_symbol[symbol] = TradingPair.from_exchange_entry(
+                            str(pair_key), spec, symbol=symbol
+                        )
+                        pairs.append(symbol)
             if pairs:
                 self.trading_pairs = pairs
-                # Poll all pairs with one bulk /v3/ticker call per tick.
                 self.gateway_engine.trading_pairs = list(pairs)
+                self.gateway_engine.trading_pairs_by_symbol = self.trading_pairs_by_symbol
                 self.market_engine.set_symbols(pairs)
                 self.write_log(f"init: discovered {len(pairs)} trading pairs", level="INFO", source="System")
             else:
@@ -127,6 +133,11 @@ class MainEngine:
     def get_all_trading_pairs(self) -> list[str]:
         """Return all discovered trading pairs as internal symbols (e.g. BTCUSDT)."""
         return list(self.trading_pairs)
+
+    def get_trading_pair(self, symbol: str) -> TradingPair | None:
+        """Cached exchangeInfo row for an internal symbol, if discovered at startup."""
+        sym = str(symbol or "").strip().upper()
+        return self.trading_pairs_by_symbol.get(sym) if sym else None
 
     def get_ticker(self, symbol: str | None = None):
         """Gateway: GET /v3/ticker (optionally for one symbol)."""

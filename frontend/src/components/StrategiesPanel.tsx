@@ -1,4 +1,4 @@
-import { useEffect, useState, type FC } from 'react';
+import { useEffect, useState, Fragment, type FC } from 'react';
 import { api } from '../lib/api';
 import type { Holding, RunningStrategy } from '../lib/types';
 
@@ -174,7 +174,7 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
         </thead>
         <tbody>
           {running.map((s) => (
-            <>
+            <Fragment key={s.name}>
               <tr
                 key={s.name}
                 className={[
@@ -303,7 +303,7 @@ export const StrategiesPanel: FC<StrategiesPanelProps> = ({
                   ) : '-'}
                 </td>
               </tr>
-            </>
+            </Fragment>
           ))}
           {running.length === 0 && (
             <tr>

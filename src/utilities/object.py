@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 
 # ---------------- SYMBOL ----------------
@@ -43,6 +43,54 @@ class SymbolData:
     min_order_notional: Optional[float] = None
     # Timestamp of the latest update applied to this symbol.
     ts: Optional[datetime] = None
+
+
+@dataclass
+class TradingPair:
+    """
+    One `/v3/exchangeInfo` `TradePairs` entry (Roostoo Public API).
+
+    The API nests rules under each pair key (e.g. ``"BTC/USD"``). JSON fields:
+    ``Coin``, ``CoinFullName``, ``Unit``, ``UnitFullName``, ``CanTrade``,
+    ``PricePrecision``, ``AmountPrecision``, ``MiniOrder``.
+    """
+
+    pair: str  # TradePairs dict key, e.g. "BTC/USD"
+    symbol: str  # internal symbol, e.g. "BTCUSDT"
+    coin: str = ""
+    coin_full_name: str = ""
+    unit: str = ""
+    unit_full_name: str = ""
+    can_trade: bool = True
+    price_precision: int = 0
+    amount_precision: int = 0
+    mini_order: float = 0.0
+
+    @classmethod
+    def from_exchange_entry(cls, roostoo_pair: str, spec: Mapping[str, Any] | None, *, symbol: str) -> TradingPair:
+        s: Mapping[str, Any] = spec if isinstance(spec, Mapping) else {}
+
+        def _st(k: str, d: str = "") -> str:
+            v = s.get(k, d)
+            return d if v is None else str(v)
+
+        try:
+            mini = float(s.get("MiniOrder", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            mini = 0.0
+
+        return cls(
+            pair=str(roostoo_pair),
+            symbol=str(symbol),
+            coin=_st("Coin"),
+            coin_full_name=_st("CoinFullName"),
+            unit=_st("Unit"),
+            unit_full_name=_st("UnitFullName"),
+            can_trade=bool(s.get("CanTrade", True)),
+            price_precision=int(s.get("PricePrecision", 0) or 0),
+            amount_precision=int(s.get("AmountPrecision", 0) or 0),
+            mini_order=mini,
+        )
 
 
 # ---------------- BAR ----------------

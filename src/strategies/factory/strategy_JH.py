@@ -61,7 +61,7 @@ class StrategyJH(StrategyTemplate):
         setting: dict[str, Any] | None = None,
     ) -> None:
         s = dict(setting or {})
-        s.setdefault("timer_trigger", 1)
+        s.setdefault("timer_trigger", 300)
         s.setdefault("interval", "15m")
 
         pairs_override = s.get("pairs")
@@ -77,7 +77,7 @@ class StrategyJH(StrategyTemplate):
         self.rr: float = float(s.get("rr", 2.0))
         self.atr_len: int = int(s.get("atr_len", 14))
         self.fill_bars: int = int(s.get("fill_bars", 1))
-        self.capital: float = float(s.get("capital", 150_000.0))
+        self.capital: float = float(s.get("capital", 20_000.0))
         self.risk_pct: float = float(s.get("risk_pct", 0.01))
 
         self._mintick: dict[str, float] = {sym: float(PAIRS_CONFIG.get(sym, {}).get("mintick", 0.01)) for sym in self.symbols}
@@ -117,8 +117,14 @@ class StrategyJH(StrategyTemplate):
     def on_timer_logic(self) -> None:
         market = getattr(self._main, "market_engine", None)
         if not market:
+            self.write_log("[strategy_JH] TIMER | aborted: no market_engine", level="WARN")
             return
         ival = self.interval.binance
+        self.write_log(
+            f"[strategy_JH] TIMER | interval={ival} | symbols={len(self.symbols)} | "
+            f"pivot_len={self.pivot_len} atr_len={self.atr_len} rr={self.rr} fill_bars={self.fill_bars}",
+            level="INFO",
+        )
         for sym in self.symbols:
             st = self._state.get(sym)
             if st is None:
@@ -131,6 +137,7 @@ class StrategyJH(StrategyTemplate):
 
     def _check_exit(self, sym: str, st: dict[str, Any]) -> None:
         if st.get("active_stop") is None or st.get("active_target") is None:
+            self.write_log(f"[strategy_JH {sym}] EXIT | no active stop/target", level="INFO")
             return
 
         holding = self._main.strategy_engine.get_holding(self.strategy_name)
@@ -141,30 +148,57 @@ class StrategyJH(StrategyTemplate):
             # If a BUY entry is still pending, keep staged exits untouched.
             pending_ids = self.get_pending_orders().get(sym, [])
             if not pending_ids:
+                self.write_log(
+                    f"[strategy_JH {sym}] EXIT | flat & no pending → clear stop/target "
+                    f"(was stop={st.get('active_stop')} target={st.get('active_target')})",
+                    level="INFO",
+                )
                 st["active_stop"] = None
                 st["active_target"] = None
+            else:
+                self.write_log(
+                    f"[strategy_JH {sym}] EXIT | qty=0 pending_BUY={pending_ids} → keep staged stop/target",
+                    level="INFO",
+                )
             return
 
         sym_data = self.get_symbol(sym)
         last = float(getattr(sym_data, "last_price", 0.0) or 0.0) if sym_data else 0.0
-        if last <= 0:
-            return
-
         stop_price = float(st["active_stop"])
         target_price = float(st["active_target"])
+        if last <= 0:
+            self.write_log(
+                f"[strategy_JH {sym}] EXIT | skip: last_price<=0 qty={qty} stop={stop_price} target={target_price}",
+                level="INFO",
+            )
+            return
 
         if last <= stop_price:
+            self.write_log(
+                f"[strategy_JH {sym}] EXIT | TRIGGER STOP | last={last:.6f} <= stop={stop_price:.6f} "
+                f"target={target_price:.6f} qty={qty}",
+                level="WARN",
+            )
             self.close_position(sym, qty, order_type="MARKET")
-            self.write_log(f"EXIT STOP {sym}: {last:.6f} <= {stop_price:.6f}", level="WARN")
             st["active_stop"] = None
             st["active_target"] = None
             return
 
         if last >= target_price:
+            self.write_log(
+                f"[strategy_JH {sym}] EXIT | TRIGGER TARGET | last={last:.6f} >= target={target_price:.6f} "
+                f"stop={stop_price:.6f} qty={qty}",
+                level="INFO",
+            )
             self.close_position(sym, qty, order_type="MARKET")
-            self.write_log(f"EXIT TARGET {sym}: {last:.6f} >= {target_price:.6f}", level="INFO")
             st["active_stop"] = None
             st["active_target"] = None
+            return
+
+        self.write_log(
+            f"[strategy_JH {sym}] EXIT | HOLD | last={last:.6f} in ({stop_price:.6f}, {target_price:.6f}) qty={qty}",
+            level="INFO",
+        )
 
     # ---------------- limit timeout (15m) ----------------
 
@@ -173,17 +207,34 @@ class StrategyJH(StrategyTemplate):
         pending_map = self.get_pending_orders()
         pending_ids = pending_map.get(sym, [])
         if not pending_ids:
+            self.write_log(f"[strategy_JH {sym}] LIMIT_TIMEOUT | no pending orders", level="INFO")
             return
         holding = self._main.strategy_engine.get_holding(self.strategy_name)
         pos = holding.positions.get(sym)
         if pos and float(pos.quantity or 0.0) > 0:
+            self.write_log(
+                f"[strategy_JH {sym}] LIMIT_TIMEOUT | skip: in position qty={float(pos.quantity or 0)} pending={pending_ids}",
+                level="INFO",
+            )
             return
         bar_count = int(getattr(self._main.market_engine, "get_bar_count")(sym, interval))
         limit_bar_idx = int(st.get("limit_bar_idx") or 0)
-        if bar_count - limit_bar_idx >= self.fill_bars + 1:
+        bars_since = bar_count - limit_bar_idx
+        need = self.fill_bars + 1
+        if bars_since >= need:
             oid = pending_ids[0]
+            self.write_log(
+                f"[strategy_JH {sym}] LIMIT_TIMEOUT | CANCEL oid={oid} | bars_since_limit={bars_since} "
+                f">= fill_bars+1={need} (bar_count={bar_count} limit_bar_idx={limit_bar_idx})",
+                level="WARN",
+            )
             self._main.handle_intent(INTENT_CANCEL_ORDER, CancelOrderRequest(order_id=oid, symbol=sym))
-            self.write_log(f"TIMEOUT {sym}: cancel {oid} after {bar_count - limit_bar_idx} bars", level="WARN")
+        else:
+            self.write_log(
+                f"[strategy_JH {sym}] LIMIT_TIMEOUT | wait | pending={pending_ids} bars_since={bars_since} "
+                f"< need={need} bar_count={bar_count} limit_bar_idx={limit_bar_idx}",
+                level="INFO",
+            )
 
     # ---------------- signal (15m) ----------------
 
@@ -194,6 +245,10 @@ class StrategyJH(StrategyTemplate):
         need = max(4, 2 * self.pivot_len + 1, self.atr_len + 1)
         bars = market.get_last_bars(sym, need, interval)
         if len(bars) < need:
+            self.write_log(
+                f"[strategy_JH {sym}] SIGNAL | skip: bars={len(bars)} < need={need}",
+                level="INFO",
+            )
             return
         cur = bars[-1]
         prev = bars[-2]
@@ -205,16 +260,26 @@ class StrategyJH(StrategyTemplate):
 
         pl = market.get_pivot_low(sym, self.pivot_len, self.pivot_len, interval)
         if pl is not None:
+            self.write_log(
+                f"[strategy_JH {sym}] SIGNAL | pivot_low={float(pl):.6f} → reset sup/hit_count",
+                level="INFO",
+            )
             st["sup_price"] = float(pl)
             st["hit_count"] = 0
             st["hit1_low"] = None
 
         if st.get("sup_price") is None:
+            self.write_log(f"[strategy_JH {sym}] SIGNAL | skip: no sup_price", level="INFO")
             return
 
         sup_price = float(st["sup_price"])
         hit_support = cur.low <= sup_price
         if not (hit_support and flat):
+            self.write_log(
+                f"[strategy_JH {sym}] SIGNAL | skip: hit_support={hit_support} flat={flat} "
+                f"L={cur.low:.6f} sup={sup_price:.6f} pos_qty={position_qty}",
+                level="INFO",
+            )
             return
 
         st["hit_count"] = int(st.get("hit_count") or 0) + 1
@@ -247,10 +312,25 @@ class StrategyJH(StrategyTemplate):
             if ok_bear and ok_t3 and ok_cs and ok_po and ok_atr and not higher_low_fail:
                 signal = True
             else:
+                self.write_log(
+                    f"[strategy_JH {sym}] SIGNAL | H2 reset support | higher_low_fail={higher_low_fail} "
+                    f"ok_bear={ok_bear} ok_t3={ok_t3} ok_cs={ok_cs} ok_po={ok_po} ok_atr={ok_atr} "
+                    f"L={cur.low:.6f} hit1_low={hit1_low}",
+                    level="INFO",
+                )
                 st["sup_price"] = None
                 st["hit_count"] = 0
                 st["hit1_low"] = None
                 return
+
+        hc = int(st["hit_count"])
+        self.write_log(
+            f"[strategy_JH {sym}] SIGNAL | H{hc} eval | ok_bear={ok_bear} ok_t3={ok_t3} ok_cs={ok_cs} "
+            f"ok_po={ok_po} ok_atr={ok_atr} atr={atr:.6f} risk={risk:.6f} higher_low_fail={higher_low_fail} "
+            f"OHLC=({cur.open:.6f},{cur.high:.6f},{cur.low:.6f},{cur.close:.6f}) sup={sup_price:.6f} "
+            f"entry~{entry_price:.6f} stop~{stop_price:.6f} → signal={signal}",
+            level="INFO",
+        )
 
         if not signal:
             return
@@ -259,6 +339,10 @@ class StrategyJH(StrategyTemplate):
 
         risk_per_unit = entry_price - stop_price
         if risk_per_unit <= 0:
+            self.write_log(
+                f"[strategy_JH {sym}] SIGNAL | skip entry: risk_per_unit={risk_per_unit} <= 0",
+                level="INFO",
+            )
             return
         risk_amount = self._alloc_per_pair * self.risk_pct
         qty = risk_amount / risk_per_unit
@@ -273,6 +357,10 @@ class StrategyJH(StrategyTemplate):
             amt_dec = ap
         qty = _round_qty(qty, amt_dec)
         if qty <= 0:
+            self.write_log(
+                f"[strategy_JH {sym}] SIGNAL | skip entry: qty after round <= 0 (raw sizing was risk_amt={risk_amount})",
+                level="INFO",
+            )
             return
 
         # Cancel any known pending order for this symbol (engine-side).
@@ -293,8 +381,8 @@ class StrategyJH(StrategyTemplate):
 
         ht = "H1" if int(st["hit_count"]) == 1 else "H2"
         self.write_log(
-            f"SIGNAL {ht} {sym}: entry={rounded_entry:.6f} stop={rounded_stop:.6f} "
-            f"target={rounded_target:.6f} qty={qty:.6f} risk=${risk_amount:.2f}",
+            f"[strategy_JH {sym}] SIGNAL | {ht} SUBMIT BUY LIMIT | entry={rounded_entry:.6f} "
+            f"stop={rounded_stop:.6f} target={rounded_target:.6f} qty={qty:.6f} risk_amt=${risk_amount:.2f}",
             level="INFO",
         )
 

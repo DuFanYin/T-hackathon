@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional
 import requests
 
 from src.utilities.base_engine import BaseEngine
-from src.utilities.object import OrderData
+from src.utilities.object import OrderData, TradingPair
 
 # Statuses that mean the order is finished (no more polling)
 _FINISHED_STATUSES = frozenset({"FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"})
@@ -50,6 +50,8 @@ class GatewayEngine(BaseEngine):
         # Optional override from main; if empty, this engine will discover tradeable pairs
         # from Roostoo `/v3/exchangeInfo` on first use.
         self.trading_pairs: list[str] = list(trading_pairs) if trading_pairs else []
+        # Filled from exchangeInfo on startup (same dict object as MainEngine.trading_pairs_by_symbol).
+        self.trading_pairs_by_symbol: dict[str, TradingPair] = {}
         self.use_competition_keys: bool = use_competition_keys
         self.env_mode: str = env_mode.strip().lower() if env_mode else "mock"
 

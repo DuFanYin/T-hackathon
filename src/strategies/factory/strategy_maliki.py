@@ -9,12 +9,13 @@ Tuned parameters (per request):
   lookback=576 (48h on 5m bars), top_n=1, rebalance_every=288 (24h),
   trailing_stop=8%, min_hold=288 (24h), min_momentum=3.0%
 
-Capital allocation: 85% of portfolio ($850k of $1M).
+Default sizing fallback: capital_allocation=$20k when cached USD balance is unavailable.
 """
 
 from __future__ import annotations
 
 import logging
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import TYPE_CHECKING, Any
 
 from src.strategies.template import StrategyTemplate
@@ -24,16 +25,19 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("strategy_maliki")
 
-# Coins to track — base symbols (MarketEngine uses BTCUSDT, ETHUSDT, etc.)
+# Assets to track in MarketEngine symbol format (internal symbols like BTCUSDT).
+#
+# Using internal symbols makes this strategy compatible with the system's
+# MarketEngine/Gateway symbol conventions without extra conversions.
 TRACKED_COINS = [
     # Large cap
-    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK",
-    "AVAX", "LTC", "TON", "XLM", "HBAR", "SUI",
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT", "LINKUSDT",
+    "AVAXUSDT", "LTCUSDT", "TONUSDT", "XLMUSDT", "HBARUSDT", "SUIUSDT",
     # Mid cap
-    "UNI", "AAVE", "FIL", "ICP", "NEAR", "APT", "FET", "SEI", "TAO",
-    "PENDLE", "ENA", "ONDO", "ARB", "CRV", "WLD", "EIGEN", "CAKE", "TRX", "CFX",
+    "UNIUSDT", "AAVEUSDT", "FILUSDT", "ICPUSDT", "NEARUSDT", "APTUSDT", "FETUSDT", "SEIUSDT", "TAOUSDT",
+    "PENDLEUSDT", "ENAUSDT", "ONDOUSDT", "ARBUSDT", "CRVUSDT", "WLDUSDT", "EIGENUSDT", "CAKEUSDT", "TRXUSDT", "CFXUSDT",
     # Meme
-    "PEPE", "SHIB", "BONK", "FLOKI", "WIF", "TRUMP", "PENGU",
+    "PEPEUSDT", "SHIBUSDT", "BONKUSDT", "FLOKIUSDT", "WIFUSDT", "TRUMPUSDT", "PENGUUSDT",
 ]
 
 
@@ -41,7 +45,7 @@ class StrategyMaliki(StrategyTemplate):
     """
     Multi-asset momentum rotation with BTC regime filter.
 
-    Every `rebalance_every` timer ticks:
+    Every `rebalance_every` strategy timer steps (each step = timer_trigger EventEngine ticks, default 300 ≈ 5m at 1s/tick):
       1. Check regime: is BTC above its 48h moving average? If not, close all and go cash.
       2. Rank all assets by 48h momentum (% return over last 576 5m-candles).
       3. Hold the top 1 mover. Exit if a different coin takes #1 (if min hold met).
@@ -55,31 +59,24 @@ class StrategyMaliki(StrategyTemplate):
         setting: dict[str, Any] | None = None,
     ) -> None:
         s = dict(setting or {})
-        s.setdefault("timer_trigger", 1)  # Run every tick; rebalance_every uses internal counting
+        # Align strategy steps with 5m bar cadence: EventEngine default interval=1s → 300 ticks ≈ 5 minutes.
+        s.setdefault("timer_trigger", 300)
         s.setdefault("interval", "5m")  # This strategy uses 5m bars
         super().__init__(main_engine, strategy_name, s)
 
-        # Strategy-owned symbol universe (no UI input needed).
-        self.symbols = [f"{c}USDT" for c in TRACKED_COINS]
-
-        # ── Order symbol format ──
-        # GatewayEngine expects internal symbols like BTCUSDT so it can convert to Roostoo pairs BTC/USD.
-        # Keep configurable, but default to gateway-compatible format.
-        self.order_symbol_format: str = str(s.get("order_symbol_format", "gateway")).lower()
-        # Supported:
-        # - "gateway": BTCUSDT (preferred)
-        # - "slash": BTC/USD (passed through by gateway)
+        # Strategy-owned symbol universe (internal MarketEngine symbols, e.g. BTCUSDT).
+        self.symbols = list(TRACKED_COINS)
 
         # ── Strategy parameters ──
         # 48h lookback on 5m bars = 48*60/5 = 576 candles.
         self.lookback_candles: int = int(s.get("lookback_candles", 576))
         # Concentrate into top-1.
         self.top_n: int = int(s.get("top_n", 1))
-        # 24h rebalance on timer ticks (assuming 1 tick per 5m cadence) = 288.
+        # 24h between rebalances: 288 strategy steps × 5m/step (with timer_trigger=300 @ 1s EventEngine).
         self.rebalance_every: int = int(s.get("rebalance_every", 288))
         # Wider trail to reduce churn.
         self.trailing_stop_pct: float = float(s.get("trailing_stop_pct", 8.0))
-        # Minimum hold 24h (on 5m ticks) = 288.
+        # Minimum hold 24h in strategy steps (288 × 5m with default timer_trigger).
         self.min_hold_candles: int = int(s.get("min_hold_candles", 288))
         # BTC regime MA: 48h on 5m bars = 576.
         self.regime_ma_candles: int = int(s.get("regime_ma_candles", 576))
@@ -87,7 +84,7 @@ class StrategyMaliki(StrategyTemplate):
         self.min_momentum_pct: float = float(s.get("min_momentum_pct", 3.0))
         # Liquidity filter: approximate 24h notional (sum(volume*close) over last 288 bars).
         self.min_notional_24h: float = float(s.get("min_notional_24h", 1_000_000))
-        self.capital_allocation: float = float(s.get("capital_allocation", 850_000))
+        self.capital_allocation: float = float(s.get("capital_allocation", 20_000))
         # top_n=1 by default; allow full allocation.
         self.max_single_alloc_pct: float = float(s.get("max_single_alloc_pct", 100.0))
 
@@ -101,17 +98,19 @@ class StrategyMaliki(StrategyTemplate):
         """Format Roostoo pair for logging (e.g. 'BTC/USD')."""
         return f"{coin}/USD"
 
-    def _format_order_symbol(self, coin: str) -> str:
-        """Format symbol for GatewayEngine.place_order()."""
-        if self.order_symbol_format == "slash":
-            return self._format_pair(coin)
-        # gateway-compatible internal symbol (so GatewayEngine converts USDT -> USD pair)
-        return f"{coin}USDT"
-
     @staticmethod
     def _symbol_to_coin(symbol: str) -> str:
+        """
+        Convert a symbol key coming from StrategyEngine holdings/pending orders into a coin base name.
+
+        - Internal symbol style: "BTCUSDT" -> "BTC"
+        """
         s = str(symbol or "").strip().upper()
-        return s[:-4] if s.endswith("USDT") else s
+        if not s:
+            return s
+        if s.endswith("USDT"):
+            return s[:-4]
+        return s
 
     def _engine_positions(self) -> dict[str, float]:
         se = getattr(self._main, "strategy_engine", None)
@@ -149,8 +148,7 @@ class StrategyMaliki(StrategyTemplate):
             f"strategy_maliki init: lookback={self.lookback_candles} "
             f"top_n={self.top_n} rebal={self.rebalance_every} "
             f"trail={self.trailing_stop_pct}% min_hold={self.min_hold_candles} "
-            f"regime_ma={self.regime_ma_candles} alloc=${self.capital_allocation:,.0f} "
-            f"order_symbol={self.order_symbol_format}",
+            f"regime_ma={self.regime_ma_candles} alloc=${self.capital_allocation:,.0f} ",
             level="INFO",
         )
 
@@ -163,7 +161,8 @@ class StrategyMaliki(StrategyTemplate):
         # Momentum calculations need lookback window for each tracked coin.
         lookback = int(self.lookback_candles)
         for c in TRACKED_COINS:
-            reqs.append({"symbol": f"{c}USDT", "interval": ival, "bars": lookback})
+            # TRACKED_COINS already uses internal MarketEngine symbols like BTCUSDT.
+            reqs.append({"symbol": c, "interval": ival, "bars": lookback})
         return reqs
 
     def on_stop_logic(self) -> None:
@@ -171,31 +170,43 @@ class StrategyMaliki(StrategyTemplate):
         self.clear_all_positions()
 
     # ──────────────────────────────────────────
-    # Main timer logic (called every tick)
+    # Main timer logic (each call ≈ every 5m with default timer_trigger=300 and EventEngine interval=1s)
     # ──────────────────────────────────────────
 
     def on_timer_logic(self) -> None:
         self._tick_count += 1
+        me = getattr(self._main, "market_engine", None)
+        btc_bars = me.get_bar_count("BTCUSDT", self.interval.binance) if me else 0
+        warmup_ok = self._has_enough_data()
+        rebal_this = self._tick_count % self.rebalance_every == 0
+        self.write_log(
+            f"[strategy_maliki] TIMER | tick={self._tick_count} | btc_bars={btc_bars}/"
+            f"{self.regime_ma_candles} warmup_ok={warmup_ok} | rebalance_this_step={rebal_this} "
+            f"(every {self.rebalance_every} ticks)",
+            level="INFO",
+        )
 
-        if not self._has_enough_data():
+        if not warmup_ok:
             if self._tick_count % 10 == 0:
-                btc_bars = 0
-                me = getattr(self._main, "market_engine", None)
-                if me:
-                    btc_bars = me.get_bar_count("BTCUSDT", self.interval.binance)
                 self.write_log(
-                    f"Warming up... {btc_bars} BTC bars (need {self.regime_ma_candles})",
+                    f"[strategy_maliki] Warming up... {btc_bars} BTC bars (need {self.regime_ma_candles})",
                     level="DEBUG",
                 )
             return
 
         current_prices = self._get_current_prices()
         if not current_prices:
+            self.write_log("[strategy_maliki] TIMER | skip: no current_prices from MarketEngine", level="WARN")
             return
+
+        self.write_log(
+            f"[strategy_maliki] prices | n={len(current_prices)} held={list(self._engine_positions().keys())}",
+            level="INFO",
+        )
 
         self._check_trailing_stops(current_prices)
 
-        if self._tick_count % self.rebalance_every == 0:
+        if rebal_this:
             self._rebalance(current_prices)
             self._log_reconciliation()
 
@@ -212,9 +223,9 @@ class StrategyMaliki(StrategyTemplate):
         me = getattr(self._main, "market_engine", None)
         if not me:
             return prices
-        for coin in TRACKED_COINS:
-            symbol = f"{coin}USDT"
-            sd = me.get_symbol(symbol)
+        for asset_symbol in TRACKED_COINS:
+            coin = self._symbol_to_coin(asset_symbol)
+            sd = me.get_symbol(asset_symbol)
             if sd and getattr(sd, "last_price", 0.0) > 0:
                 prices[coin] = float(sd.last_price)
         return prices
@@ -223,17 +234,25 @@ class StrategyMaliki(StrategyTemplate):
     # Regime filter
     # ──────────────────────────────────────────
 
-    def _is_regime_bullish(self) -> bool:
-        """True if BTC is above its N-period moving average (from MarketEngine bars)."""
+    def _regime_snapshot(self) -> tuple[bool, float, float] | None:
+        """
+        (bullish, btc_last, btc_ma) or None if insufficient bars / no market.
+        bullish ⇔ btc_last > btc_ma.
+        """
         me = getattr(self._main, "market_engine", None)
         if not me:
-            return False
+            return None
         bars = me.get_last_bars("BTCUSDT", self.regime_ma_candles, self.interval.binance)
         if len(bars) < self.regime_ma_candles:
-            return False
-        btc_price = bars[-1].close
-        btc_ma = sum(b.close for b in bars[-self.regime_ma_candles:]) / self.regime_ma_candles
-        return btc_price > btc_ma
+            return None
+        btc_price = float(bars[-1].close)
+        btc_ma = sum(float(b.close) for b in bars[-self.regime_ma_candles :]) / self.regime_ma_candles
+        return (btc_price > btc_ma, btc_price, btc_ma)
+
+    def _is_regime_bullish(self) -> bool:
+        """True if BTC is above its N-period moving average (from MarketEngine bars)."""
+        snap = self._regime_snapshot()
+        return bool(snap and snap[0])
 
     # ──────────────────────────────────────────
     # Momentum ranking
@@ -249,12 +268,12 @@ class StrategyMaliki(StrategyTemplate):
             return []
         rankings: list[dict] = []
         vol_window = 288  # 24h on 5m bars
-        for coin in TRACKED_COINS:
-            symbol = f"{coin}USDT"
-            bars = me.get_last_bars(symbol, self.lookback_candles, self.interval.binance)
+        for asset_symbol in TRACKED_COINS:
+            coin = self._symbol_to_coin(asset_symbol)
+            bars = me.get_last_bars(asset_symbol, self.lookback_candles, self.interval.binance)
             if len(bars) < self.lookback_candles:
                 continue
-            notional_24h = me.get_notional_sum(symbol, vol_window, self.interval.binance)
+            notional_24h = me.get_notional_sum(asset_symbol, vol_window, self.interval.binance)
             if notional_24h < self.min_notional_24h:
                 continue
             past = bars[0].close
@@ -269,7 +288,8 @@ class StrategyMaliki(StrategyTemplate):
                 "momentum_pct": momentum_pct,
                 "price": current,
                 "roostoo_pair": self._format_pair(coin),
-                "roostoo_symbol": self._format_order_symbol(coin),
+                # System internal symbol (e.g. BTCUSDT) for GatewayEngine.
+                "roostoo_symbol": f"{coin}USDT",
                 "notional_24h": notional_24h,
             })
         rankings.sort(key=lambda x: x["momentum_pct"], reverse=True)
@@ -287,6 +307,10 @@ class StrategyMaliki(StrategyTemplate):
         for coin, qty in held.items():
             price = current_prices.get(coin)
             if not price:
+                self.write_log(
+                    f"[strategy_maliki] TRAIL | {coin} | skip: no price in current_prices qty_held={qty}",
+                    level="INFO",
+                )
                 continue
             st = self._risk_state.setdefault(
                 coin,
@@ -299,16 +323,21 @@ class StrategyMaliki(StrategyTemplate):
 
             # Respect minimum hold period
             ticks_held = self._tick_count - int(st["entry_tick"])
+            peak = float(st["peak_price"])
+            dd = (peak - price) / peak * 100 if peak > 0 else 0.0
+            self.write_log(
+                f"[strategy_maliki] TRAIL | {coin} | price={price:.6f} peak={peak:.6f} "
+                f"dd={dd:.2f}% (th={self.trailing_stop_pct}%) ticks_held={ticks_held}/"
+                f"{self.min_hold_candles} qty={qty}",
+                level="INFO",
+            )
             if ticks_held < self.min_hold_candles:
                 continue
 
             # Check trailing stop
-            peak = float(st["peak_price"])
-            dd = (peak - price) / peak * 100 if peak > 0 else 0.0
             if dd >= self.trailing_stop_pct:
                 self.write_log(
-                    f"TRAILING STOP {coin}: peak={peak:.4f} "
-                    f"now={price:.4f} dd={dd:.1f}%",
+                    f"[strategy_maliki] TRAIL | {coin} | TRIGGER peak={peak:.4f} now={price:.4f} dd={dd:.1f}%",
                     level="WARN",
                 )
                 to_close.append(coin)
@@ -322,32 +351,64 @@ class StrategyMaliki(StrategyTemplate):
 
     def _rebalance(self, current_prices: dict) -> None:
         """Core rebalance logic: regime check → rank → rotate."""
-        regime = self._is_regime_bullish()
+        snap = self._regime_snapshot()
+        regime = bool(snap and snap[0])
         held = self._engine_positions()
+        if snap:
+            bull, btc_p, btc_ma = snap
+            self.write_log(
+                f"[strategy_maliki] REBALANCE | regime={'BULL' if bull else 'BEAR'} | "
+                f"BTC_last={btc_p:.4f} MA({self.regime_ma_candles})={btc_ma:.4f} "
+                f"spread={btc_p - btc_ma:+.4f} (bull needs last>MA) | held={list(held.keys())}",
+                level="INFO",
+            )
+        else:
+            self.write_log(
+                "[strategy_maliki] REBALANCE | regime=UNKNOWN (insufficient BTC bars for MA)",
+                level="WARN",
+            )
 
         # If bearish regime, close positions that have met min hold
         if not regime:
             n = len(held)
-            self.write_log(f"REGIME: Bearish (BTC below MA) — exiting {n} position(s)", level="WARN")
+            self.write_log(
+                f"[strategy_maliki] REBALANCE | BEAR path — close if min_hold met | n_held={n}",
+                level="WARN",
+            )
             for coin in list(held.keys()):
                 st = self._risk_state.get(coin)
                 ticks_held = self._tick_count - int(st["entry_tick"]) if st else self.min_hold_candles
+                self.write_log(
+                    f"[strategy_maliki] REBALANCE | BEAR | {coin} ticks_held={ticks_held} "
+                    f"need>={self.min_hold_candles} → "
+                    f"{'CLOSE regime_bearish' if ticks_held >= self.min_hold_candles else 'keep'}",
+                    level="INFO",
+                )
                 if ticks_held >= self.min_hold_candles:
                     self._close_position(coin, "regime_bearish")
             return
 
         # Bullish regime — rank and rotate
         rankings = self._get_momentum_rankings()
+        self.write_log(
+            f"[strategy_maliki] REBALANCE | BULL | rankings_count={len(rankings)} "
+            f"min_mom={self.min_momentum_pct}% min_notional_24h={self.min_notional_24h}",
+            level="INFO",
+        )
 
         if rankings:
             self.write_log(
-                f"REBALANCE: regime=BULL | top movers: "
-                + ", ".join(f"{r['coin']}({r['momentum_pct']:+.1f}%)" for r in rankings[:5]),
+                f"[strategy_maliki] REBALANCE | top movers: "
+                + ", ".join(
+                    f"{r['coin']}({r['momentum_pct']:+.1f}% n24h={r.get('notional_24h', 0):.0f})"
+                    for r in rankings[:8]
+                ),
                 level="INFO",
             )
         else:
             self.write_log(
-                f"REBALANCE: No assets meet momentum threshold ({self.min_momentum_pct:.2f}%) — staying in cash",
+                f"[strategy_maliki] REBALANCE | no candidates (momentum/notional/lookback) "
+                f"min_momentum={self.min_momentum_pct:.2f}% — cash mode",
                 level="WARN",
             )
             # If nothing qualifies, rotate to cash (respect min hold).
@@ -359,26 +420,47 @@ class StrategyMaliki(StrategyTemplate):
             return
 
         target_coins = [r["coin"] for r in rankings[:self.top_n]]
+        self.write_log(
+            f"[strategy_maliki] REBALANCE | target_coins(top_{self.top_n})={target_coins}",
+            level="INFO",
+        )
 
         # Exit positions not in target (if min hold met)
         for coin in list(held.keys()):
             if coin not in target_coins:
                 st = self._risk_state.get(coin)
                 ticks_held = self._tick_count - int(st["entry_tick"]) if st else self.min_hold_candles
+                self.write_log(
+                    f"[strategy_maliki] REBALANCE | rotation check | {coin} not in {target_coins} "
+                    f"ticks_held={ticks_held}",
+                    level="INFO",
+                )
                 if ticks_held >= self.min_hold_candles:
-                    self.write_log(f"ROTATION EXIT: {coin} no longer in top {self.top_n}", level="INFO")
+                    self.write_log(
+                        f"[strategy_maliki] ROTATION EXIT | {coin} dropped from top {self.top_n}",
+                        level="INFO",
+                    )
                     self._close_position(coin, "rotation")
 
         # Enter new targets
         pending_by_symbol = self.get_pending_orders()
         for rank_info in rankings[:self.top_n]:
             coin = rank_info["coin"]
-            sym = self._format_order_symbol(coin)
+            sym = f"{coin}USDT"
             if coin in held or pending_by_symbol.get(sym):
+                self.write_log(
+                    f"[strategy_maliki] ENTRY skip | {coin} already_held={coin in held} "
+                    f"pending_on_{sym}={bool(pending_by_symbol.get(sym))}",
+                    level="INFO",
+                )
                 continue  # already holding
 
             slots_open = self.top_n - len(held)
             if slots_open <= 0:
+                self.write_log(
+                    f"[strategy_maliki] ENTRY skip | slots_open={slots_open} held={list(held.keys())}",
+                    level="INFO",
+                )
                 break
 
             self._open_position(
@@ -415,9 +497,16 @@ class StrategyMaliki(StrategyTemplate):
         # Round to reasonable precision
         qty = round(qty, 5)
 
+        self.write_log(
+            f"[strategy_maliki] ENTRY sizing | {coin} | usd_wallet={usd_balance:.2f} "
+            f"fallback_capital={self.capital_allocation} → portfolio_value={portfolio_value:.2f} "
+            f"max_single%={self.max_single_alloc_pct} alloc=${alloc:,.2f} price={price:.6f} qty={qty:.5f}",
+            level="INFO",
+        )
+
         if qty <= 0 or alloc < 10:
             self.write_log(
-                f"BUY {coin} skipped: qty={qty:.5f} alloc=${alloc:,.0f} (min $10)",
+                f"[strategy_maliki] BUY {coin} skipped: qty={qty:.5f} alloc=${alloc:,.0f} (min $10)",
                 level="WARN",
             )
             return
@@ -427,12 +516,13 @@ class StrategyMaliki(StrategyTemplate):
         limit_price = round(price * 1.001, 8)
 
         self.write_log(
-            f"BUY {coin}: qty={qty:.5f} limit={limit_price:.4f} "
-            f"alloc=${alloc:,.0f} momentum={momentum:+.2f}%",
+            f"[strategy_maliki] BUY {coin} | qty={qty:.5f} limit={limit_price:.6f} ref={price:.6f} "
+            f"momentum={momentum:+.2f}%",
             level="INFO",
         )
 
-        roostoo_symbol = self._format_order_symbol(coin)
+        # System internal symbol format: e.g. BTCUSDT.
+        roostoo_symbol = f"{coin}USDT"
         order_id = self.open_position(
             symbol=roostoo_symbol,
             quantity=qty,
@@ -470,7 +560,7 @@ class StrategyMaliki(StrategyTemplate):
         )
 
         self.close_position(
-            symbol=self._format_order_symbol(coin),
+            symbol=f"{coin}USDT",
             quantity=qty,
             order_type="MARKET",
         )
