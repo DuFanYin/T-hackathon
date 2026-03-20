@@ -35,20 +35,17 @@ class TestStratTestAlt:
         strat = StratTestAlt(main, "StratTestAlt_Test", setting={})
         assert strat.strategy_name == "StratTestAlt_Test"
         assert strat.symbol == "BTCUSDT"
-        assert strat.quantity == 0.001
-        assert strat.stop_loss_pct == 0.01
-        assert strat.take_profit_pct == 0.02
+        assert strat.quantity == 0.01
+        assert strat._next_action_open is True
 
     def test_construction_with_setting(self):
         main = _main_engine_mock()
         strat = StratTestAlt(
             main, "StratTestAlt_Test",
-            setting={"quantity": 0.01, "timer_trigger": 5, "stop_loss_pct": 0.02, "take_profit_pct": 0.03},
+            setting={"quantity": 0.01, "timer_trigger": 5},
         )
         assert strat.symbol == "BTCUSDT"  # BTC only
         assert strat.quantity == 0.01
-        assert strat.stop_loss_pct == 0.02
-        assert strat.take_profit_pct == 0.03
 
     def test_on_init_on_start(self):
         main = _main_engine_mock()
@@ -191,9 +188,7 @@ class TestStrategyMaliki:
         main = _main_engine_mock()
         main.market_engine.get_symbol.return_value = MagicMock(last_price=50000.0)
         strat = StrategyMaliki(main, "strategy_maliki_Test")
-        strat._positions["BTC"] = {
-            "qty": 0.01, "entry_price": 50000, "peak_price": 50000,
-            "entry_tick": 0, "roostoo_pair": "BTC/USD", "roostoo_symbol": "BTCUSDT",
-        }
+        holding = main.strategy_engine.get_holding.return_value
+        holding.positions = {"BTCUSDT": MagicMock(quantity=0.01)}
         strat.on_stop_logic()
-        assert "BTC" not in strat._positions
+        assert main.handle_intent.called

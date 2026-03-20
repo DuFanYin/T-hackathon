@@ -150,16 +150,19 @@ class StrategyJH(StrategyTemplate):
         if last <= 0:
             return
 
-        if last <= float(st["active_stop"]):
+        stop_price = float(st["active_stop"])
+        target_price = float(st["active_target"])
+
+        if last <= stop_price:
             self.close_position(sym, qty, order_type="MARKET")
-            self.write_log(f"EXIT STOP {sym}: {last:.6f} <= {float(st['active_stop']):.6f}", level="WARN")
+            self.write_log(f"EXIT STOP {sym}: {last:.6f} <= {stop_price:.6f}", level="WARN")
             st["active_stop"] = None
             st["active_target"] = None
             return
 
-        if last >= float(st["active_target"]):
+        if last >= target_price:
             self.close_position(sym, qty, order_type="MARKET")
-            self.write_log(f"EXIT TARGET {sym}: {last:.6f} >= {float(st['active_target']):.6f}", level="INFO")
+            self.write_log(f"EXIT TARGET {sym}: {last:.6f} >= {target_price:.6f}", level="INFO")
             st["active_stop"] = None
             st["active_target"] = None
 
