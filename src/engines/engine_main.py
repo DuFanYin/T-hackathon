@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
@@ -17,6 +18,87 @@ from .engine_strategy import AVAILABLE_STRATEGIES, StrategyEngine
 from src.control.log_store import LogStore
 from src.control.order_store import OrderStore
 from src.utilities.object import TradingPair
+
+
+# ---------------------------------------------------------------------------
+# Fallback precision table — used ONLY when /v3/exchangeInfo fails all retries.
+#
+# Values sourced from Roostoo live /v3/exchangeInfo (2026-03-20).
+# Covers all 67 pairs on the exchange.
+# ---------------------------------------------------------------------------
+_FALLBACK_PAIR_RULES: dict[str, dict] = {
+    # ── strategy_JH pairs ──
+    "APTUSDT":         {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
+    "CRVUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "EIGENUSDT":       {"price_precision": 3, "amount_precision": 1, "mini_order": 10.0},
+    "TAOUSDT":         {"price_precision": 1, "amount_precision": 4, "mini_order": 10.0},
+    "UNIUSDT":         {"price_precision": 3, "amount_precision": 1, "mini_order": 10.0},
+    "TRUMPUSDT":       {"price_precision": 2, "amount_precision": 1, "mini_order": 10.0},
+    "BONKUSDT":        {"price_precision": 8, "amount_precision": 0, "mini_order": 10.0},
+    "SHIBUSDT":        {"price_precision": 8, "amount_precision": 0, "mini_order": 10.0},
+    # ── strategy_maliki top 20 by market cap ──
+    "BTCUSDT":         {"price_precision": 0, "amount_precision": 5, "mini_order": 10.0},
+    "ETHUSDT":         {"price_precision": 2, "amount_precision": 4, "mini_order": 10.0},
+    "BNBUSDT":         {"price_precision": 1, "amount_precision": 3, "mini_order": 10.0},
+    "SOLUSDT":         {"price_precision": 2, "amount_precision": 2, "mini_order": 10.0},
+    "XRPUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "ADAUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "DOGEUSDT":        {"price_precision": 5, "amount_precision": 0, "mini_order": 10.0},
+    "DOTUSDT":         {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
+    "LINKUSDT":        {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
+    "AVAXUSDT":        {"price_precision": 2, "amount_precision": 2, "mini_order": 10.0},
+    "LTCUSDT":         {"price_precision": 2, "amount_precision": 3, "mini_order": 10.0},
+    "TONUSDT":         {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
+    "XLMUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "HBARUSDT":        {"price_precision": 5, "amount_precision": 0, "mini_order": 10.0},
+    "SUIUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "AAVEUSDT":        {"price_precision": 1, "amount_precision": 3, "mini_order": 10.0},
+    "FILUSDT":         {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
+    "ICPUSDT":         {"price_precision": 2, "amount_precision": 2, "mini_order": 10.0},
+    "NEARUSDT":        {"price_precision": 3, "amount_precision": 1, "mini_order": 10.0},
+    "PEPEUSDT":        {"price_precision": 8, "amount_precision": 0, "mini_order": 10.0},
+    # ── additional strategy_maliki coins ──
+    "FETUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "SEIUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "PENDLEUSDT":      {"price_precision": 3, "amount_precision": 1, "mini_order": 10.0},
+    "ENAUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "ONDOUSDT":        {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "ARBUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "WLDUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "CAKEUSDT":        {"price_precision": 3, "amount_precision": 1, "mini_order": 10.0},
+    "TRXUSDT":         {"price_precision": 5, "amount_precision": 0, "mini_order": 10.0},
+    "CFXUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "FLOKIUSDT":       {"price_precision": 7, "amount_precision": 0, "mini_order": 10.0},
+    "WIFUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "PENGUUSDT":       {"price_precision": 5, "amount_precision": 0, "mini_order": 10.0},
+    # ── remaining Roostoo pairs (from live /v3/exchangeInfo 2026-03-20) ──
+    "1000CHEEMSUSDT":  {"price_precision": 6, "amount_precision": 0, "mini_order": 10.0},
+    "ASTERUSDT":       {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
+    "AVNTUSDT":        {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "BIOUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "BMTUSDT":         {"price_precision": 5, "amount_precision": 1, "mini_order": 10.0},
+    "EDENUSDT":        {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "FORMUSDT":        {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "HEMIUSDT":        {"price_precision": 5, "amount_precision": 1, "mini_order": 10.0},
+    "LINEAUSDT":       {"price_precision": 5, "amount_precision": 0, "mini_order": 10.0},
+    "LISTAUSDT":       {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "MIRAUSDT":        {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "OMNIUSDT":        {"price_precision": 2, "amount_precision": 2, "mini_order": 10.0},
+    "OPENUSDT":        {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "PAXGUSDT":        {"price_precision": 2, "amount_precision": 4, "mini_order": 10.0},
+    "PLUMEUSDT":       {"price_precision": 5, "amount_precision": 0, "mini_order": 10.0},
+    "POLUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "PUMPUSDT":        {"price_precision": 6, "amount_precision": 0, "mini_order": 10.0},
+    "SOMIUSDT":        {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "STOUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "SUSDT":           {"price_precision": 5, "amount_precision": 1, "mini_order": 10.0},
+    "TUTUSDT":         {"price_precision": 5, "amount_precision": 0, "mini_order": 10.0},
+    "VIRTUALUSDT":     {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "WLFIUSDT":        {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "XPLUSDT":         {"price_precision": 4, "amount_precision": 1, "mini_order": 10.0},
+    "ZECUSDT":         {"price_precision": 2, "amount_precision": 3, "mini_order": 10.0},
+    "ZENUSDT":         {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
+}
 
 
 class MainEngine:
@@ -50,35 +132,8 @@ class MainEngine:
         self.risk_engine = RiskEngine(main_engine=self)
         self.write_log("init: engines constructed", level="INFO", source="System")
 
-        # One-time discovery: cache TradingPair per symbol + mirror symbol list for polling/ticker.
-        try:
-            self.write_log("init: discovering trading pairs via /v3/exchangeInfo", level="INFO", source="System")
-            info = self.gateway_engine.get_exchange_info()
-            pairs: list[str] = []
-            if isinstance(info, dict):
-                trade_pairs = info.get("TradePairs")
-                if isinstance(trade_pairs, dict):
-                    from .engine_gateway import GatewayEngine as _GW
-
-                    for pair_key, spec in trade_pairs.items():
-                        symbol = _GW._from_roostoo_pair(str(pair_key))
-                        if not symbol or symbol in pairs:
-                            continue
-                        self.trading_pairs_by_symbol[symbol] = TradingPair.from_exchange_entry(
-                            str(pair_key), spec, symbol=symbol
-                        )
-                        pairs.append(symbol)
-            if pairs:
-                self.trading_pairs = pairs
-                self.gateway_engine.trading_pairs = list(pairs)
-                self.gateway_engine.trading_pairs_by_symbol = self.trading_pairs_by_symbol
-                self.market_engine.set_symbols(pairs)
-                self.write_log(f"init: discovered {len(pairs)} trading pairs", level="INFO", source="System")
-            else:
-                self.write_log("init: no trading pairs discovered from /v3/exchangeInfo", level="WARN", source="System")
-        except Exception as e:
-            # Discovery failure should not stop the engine; market data will be limited.
-            self.write_log(f"init: exchangeInfo discovery failed: {e}", level="ERROR", source="System")
+        # One-time discovery with retries + fallback.
+        self._exchange_info_ok: bool = self._discover_trading_pairs()
 
         # Create instances for all known strategies on system init.
         # Place this AFTER market symbol buffers are seeded so strategies that derive symbol lists
@@ -111,7 +166,26 @@ class MainEngine:
         return self.strategy_engine.get_strategy(strategy_name)
 
     def start_strategy(self, strategy_name: str) -> None:
-        """Start the strategy (independent start control)."""
+        """Start the strategy (independent start control).
+
+        Refuses to start if /v3/exchangeInfo failed AND no fallback precision
+        data is available — orders would be sent unrounded, causing step-size
+        rejections and potential ghost positions.
+        """
+        if not self._exchange_info_ok and not self.trading_pairs_by_symbol:
+            raise RuntimeError(
+                f"Cannot start {strategy_name}: /v3/exchangeInfo failed after retries "
+                "and no fallback precision data is loaded. Orders would be sent with "
+                "unrounded quantities, causing step-size rejections."
+            )
+        if not self._exchange_info_ok:
+            self.write_log(
+                f"WARNING: starting {strategy_name} with FALLBACK precision data — "
+                "/v3/exchangeInfo discovery failed. Pairs not in the fallback table "
+                "will have unrounded orders.",
+                level="WARN",
+                source="System",
+            )
         self.strategy_engine.start_strategy(strategy_name)
 
     def stop_strategy(self, strategy_name: str) -> None:
@@ -237,6 +311,166 @@ class MainEngine:
         except Exception:
             # Logging must never crash the engine.
             pass
+
+    # ------------------------------------------------------------------
+    # Exchange info discovery (retries + fallback)
+    # ------------------------------------------------------------------
+
+    def _discover_trading_pairs(self, max_retries: int = 3, retry_delay: float = 5.0) -> bool:
+        """Discover trading pairs from /v3/exchangeInfo with retries.
+
+        Returns True if live discovery succeeded on any attempt.
+        On total failure, applies fallback precision table and returns False.
+        """
+        for attempt in range(1, max_retries + 1):
+            self.write_log(
+                f"init: /v3/exchangeInfo attempt {attempt}/{max_retries}",
+                level="INFO", source="System",
+            )
+            try:
+                info = self.gateway_engine.get_exchange_info()
+                pairs = self._parse_exchange_info(info)
+                if pairs:
+                    self.trading_pairs = pairs
+                    self.gateway_engine.trading_pairs = list(pairs)
+                    self.gateway_engine.trading_pairs_by_symbol = self.trading_pairs_by_symbol
+                    self.market_engine.set_symbols(pairs)
+                    self.write_log(
+                        f"init: discovered {len(pairs)} trading pairs",
+                        level="INFO", source="System",
+                    )
+                    return True
+                self.write_log(
+                    f"init: /v3/exchangeInfo attempt {attempt} returned no TradePairs",
+                    level="WARN", source="System",
+                )
+            except Exception as e:
+                self.write_log(
+                    f"init: /v3/exchangeInfo attempt {attempt} failed: {e}",
+                    level="ERROR", source="System",
+                )
+
+            if attempt < max_retries:
+                self.write_log(
+                    f"init: retrying /v3/exchangeInfo in {retry_delay}s...",
+                    level="INFO", source="System",
+                )
+                time.sleep(retry_delay)
+
+        # All retries exhausted — apply fallback
+        self.write_log(
+            f"CRITICAL: /v3/exchangeInfo failed after {max_retries} retries. "
+            "Applying fallback precision table for known pairs. "
+            "Orders for unlisted pairs will be UNROUNDED and likely rejected.",
+            level="ERROR", source="System",
+        )
+        self._apply_fallback_precisions()
+        return False
+
+    # Pairs whose precision we validate at startup — mismatch here means
+    # every order for that pair would be rejected.
+    _CRITICAL_PAIR_PRECISIONS: dict[str, tuple[int, int]] = {
+        # symbol: (expected_price_precision, expected_amount_precision)
+        "TAOUSDT":  (1, 4),
+        "FETUSDT":  (4, 1),
+        "BONKUSDT": (8, 0),
+        "SHIBUSDT": (8, 0),
+        "APTUSDT":  (3, 2),
+    }
+
+    def _parse_exchange_info(self, info: object) -> list[str]:
+        """Parse /v3/exchangeInfo response into trading_pairs_by_symbol. Returns symbol list."""
+        if not isinstance(info, dict):
+            return []
+        trade_pairs = info.get("TradePairs")
+        if not isinstance(trade_pairs, dict):
+            return []
+
+        from .engine_gateway import GatewayEngine as _GW
+
+        pairs: list[str] = []
+        for pair_key, spec in trade_pairs.items():
+            symbol = _GW._from_roostoo_pair(str(pair_key))
+            if not symbol or symbol in pairs:
+                continue
+            self.trading_pairs_by_symbol[symbol] = TradingPair.from_exchange_entry(
+                str(pair_key), spec, symbol=symbol,
+            )
+            pairs.append(symbol)
+
+        # Log precision for every discovered pair and validate critical ones.
+        self._log_and_validate_precisions()
+        return pairs
+
+    def _log_and_validate_precisions(self) -> None:
+        """Log precisions for discovered pairs; warn if critical pairs differ from expected."""
+        for symbol in sorted(self.trading_pairs_by_symbol):
+            tp = self.trading_pairs_by_symbol[symbol]
+            self.write_log(
+                f"exchangeInfo: {tp.pair} → price_prec={tp.price_precision} "
+                f"amount_prec={tp.amount_precision} mini_order={tp.mini_order}",
+                level="DEBUG", source="System",
+            )
+
+        for symbol, (exp_px, exp_amt) in self._CRITICAL_PAIR_PRECISIONS.items():
+            tp = self.trading_pairs_by_symbol.get(symbol)
+            if tp is None:
+                self.write_log(
+                    f"WARN: critical pair {symbol} NOT found in exchangeInfo",
+                    level="WARN", source="System",
+                )
+                continue
+            mismatches = []
+            if tp.price_precision != exp_px:
+                mismatches.append(
+                    f"price_precision: expected={exp_px} got={tp.price_precision}"
+                )
+            if tp.amount_precision != exp_amt:
+                mismatches.append(
+                    f"amount_precision: expected={exp_amt} got={tp.amount_precision}"
+                )
+            if mismatches:
+                self.write_log(
+                    f"WARN: {symbol} precision mismatch: {', '.join(mismatches)} — "
+                    "update _CRITICAL_PAIR_PRECISIONS or _FALLBACK_PAIR_RULES",
+                    level="WARN", source="System",
+                )
+            else:
+                self.write_log(
+                    f"OK: {symbol} precision verified px={exp_px} amt={exp_amt}",
+                    level="INFO", source="System",
+                )
+
+    def _apply_fallback_precisions(self) -> None:
+        """Load hardcoded step sizes for known pairs (does not overwrite live data)."""
+        added = 0
+        for symbol, rules in _FALLBACK_PAIR_RULES.items():
+            if symbol in self.trading_pairs_by_symbol:
+                continue  # live data takes priority
+            base = symbol.replace("USDT", "")
+            self.trading_pairs_by_symbol[symbol] = TradingPair(
+                pair=f"{base}/USD",
+                symbol=symbol,
+                coin=base,
+                unit="USD",
+                can_trade=True,
+                price_precision=int(rules["price_precision"]),
+                amount_precision=int(rules["amount_precision"]),
+                mini_order=float(rules["mini_order"]),
+            )
+            added += 1
+
+        if added:
+            all_symbols = list(self.trading_pairs_by_symbol.keys())
+            self.trading_pairs = all_symbols
+            self.gateway_engine.trading_pairs = list(all_symbols)
+            self.gateway_engine.trading_pairs_by_symbol = self.trading_pairs_by_symbol
+            self.market_engine.set_symbols(all_symbols)
+            self.write_log(
+                f"init: loaded {added} fallback pair precisions "
+                f"(total {len(self.trading_pairs_by_symbol)} pairs)",
+                level="WARN", source="System",
+            )
 
     # ------------------------------------------------------------------
     # Intent handling (delegates to EventEngine)
