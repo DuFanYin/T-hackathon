@@ -2,7 +2,7 @@
 strategy_maliki: Multi-Asset Momentum Rotation (v2) — tuned (48h / top1 / daily rebalance)
 
 Plugs into the team's event-driven framework via StrategyTemplate.
-Signal source: MarketEngine (bars from GatewayEngine Binance 5m injection).
+Signal source: MarketEngine (bars fetched from Binance at the configured interval, e.g. 5m).
 Execution: via framework's send_order() -> GatewayEngine -> Roostoo API.
 
 Tuned parameters (per request):
@@ -106,7 +106,11 @@ class StrategyMaliki(StrategyTemplate):
         )
 
     def _format_pair(self, coin: str) -> str:
-        """Format Roostoo pair for logging (e.g. 'BTC/USD')."""
+        """
+        Format Roostoo pair for logging (e.g. 'BTC/USD').
+
+        Kept as a small helper for backward compatibility with tests.
+        """
         return f"{coin}/USD"
 
     @staticmethod
@@ -313,7 +317,7 @@ class StrategyMaliki(StrategyTemplate):
                 "coin": coin,
                 "momentum_pct": momentum_pct,
                 "price": current,
-                "roostoo_pair": self._format_pair(coin),
+                "roostoo_pair": f"{coin}/USD",
                 # System internal symbol (e.g. BTCUSDT) for GatewayEngine.
                 "roostoo_symbol": f"{coin}USDT",
                 "notional_24h": notional_24h,

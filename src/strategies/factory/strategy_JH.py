@@ -39,19 +39,12 @@ def _round_price(value: float, mintick: float) -> float:
     return round(value / mintick) * mintick
 
 
-def _round_qty(value: float, decimals: int = 6) -> float:
-    if decimals < 0:
-        return value
-    factor = 10.0**decimals
-    return int(value * factor) / factor
-
-
 class StrategyJH(StrategyTemplate):
     """
     Multi-pair 15m support-bounce strategy.
 
-    - Signal computed on internally resampled 15m bars.
-    - Stop/target monitored on every 5m tick.
+    - Signal computed on 15m bars provided by `MarketEngine` (no extra resampling here).
+    - Stop/target monitored on every `on_timer_logic()` run (default is ~5m if `EventEngine` is 1s/tick).
     """
 
     def __init__(
@@ -381,7 +374,9 @@ class StrategyJH(StrategyTemplate):
         ap = getattr(sym_data, "amount_precision", None) if sym_data else None
         if isinstance(ap, int) and 0 <= ap <= 12:
             amt_dec = ap
-        qty = _round_qty(qty, amt_dec)
+        # Inline: round qty down to exchange amount precision.
+        factor = 10.0**amt_dec if amt_dec >= 0 else 1.0
+        qty = int(qty * factor) / factor
         if qty <= 0:
             self.write_log(
                 f"[strategy_JH {sym}] SIGNAL | skip entry: qty after round <= 0 (raw sizing was risk_amt={risk_amount})",
