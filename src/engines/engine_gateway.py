@@ -695,6 +695,17 @@ class GatewayEngine(BaseEngine):
 
         # Emit immediately so StrategyEngine holdings reflect reality.
         # For MARKET taker orders, they may never enter the polling loop.
+        try:
+            merged_status = (merged.status or "").upper()
+            self.log(
+                f"[Gateway] register_order: strategy={strat} order_id={oid} symbol={merged.symbol} side={merged.side} "
+                f"type={merged.order_type} status={merged_status} qty={float(merged.quantity or 0.0)} "
+                f"filled_qty={float(merged.filled_quantity or 0.0)} filled_avg={float(merged.filled_avg_price or 0.0)}",
+                level="INFO",
+                source="Gateway",
+            )
+        except Exception:
+            pass
         if self.main_engine is not None:
             try:
                 if hasattr(self.main_engine, "strategy_engine"):
@@ -776,6 +787,18 @@ class GatewayEngine(BaseEngine):
             status = (updated.status or "").upper()
             changed = (updated.filled_quantity != prev_filled) or (status != (prev_status or "").upper())
             if changed:
+                try:
+                    delta_filled = float(updated.filled_quantity or 0.0) - float(prev_filled or 0.0)
+                    self.log(
+                        f"[Gateway] poll_update: order_id={oid} strategy={updated.strategy_name or '?'} "
+                        f"symbol={updated.symbol} side={updated.side} status {str(prev_status).upper()}→{status} "
+                        f"filled_qty {float(prev_filled or 0.0):.8f}→{float(updated.filled_quantity or 0.0):.8f} "
+                        f"(delta={delta_filled:.8f})",
+                        level="DEBUG",
+                        source="Gateway",
+                    )
+                except Exception:
+                    pass
                 # Only persist to SQLite when order is FILLED (not PENDING, PARTIALLY_FILLED, etc.)
                 if status == "FILLED" and hasattr(me, "order_store") and me.order_store is not None:
                     try:

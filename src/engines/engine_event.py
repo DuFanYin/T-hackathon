@@ -175,11 +175,27 @@ class EventEngine(BaseEngine):
             return None
 
         me = self.main_engine
+        write_log_fn = getattr(me, "write_log", None)
+
+        def _log(msg: str, *, level: str = "INFO", source: str = "EventEngine") -> None:
+            # Some integration tests inject a minimal facade without `write_log`.
+            if callable(write_log_fn):
+                try:
+                    write_log_fn(msg, level=level, source=source)
+                except Exception:
+                    pass
 
         if intent_type == INTENT_PLACE_ORDER:
             data = payload
             if isinstance(data, OrderRequest):
                 price = None if str(data.order_type).upper() == "MARKET" else float(data.price)
+                _log(
+                    f"[EventEngine] INTENT_PLACE_ORDER calling place_order: strategy={data.strategy_name} "
+                    f"symbol={data.symbol} side={data.side} qty={float(data.quantity)} price={data.price} "
+                    f"order_type={data.order_type}",
+                    level="DEBUG",
+                    source="EventEngine",
+                )
                 resp = me.place_order(
                     symbol=data.symbol,
                     side=data.side,
@@ -188,13 +204,20 @@ class EventEngine(BaseEngine):
                     order_type=data.order_type,
                 )
                 if isinstance(resp, dict) and resp.get("Success") is False:
+                    _log(
+                        f"[EventEngine] INTENT_PLACE_ORDER place_order failed: strategy={data.strategy_name} "
+                        f"symbol={data.symbol} side={data.side} qty={float(data.quantity)} "
+                        f"order_type={data.order_type} err={resp.get('ErrorCode')}/{resp.get('ErrorMessage')}",
+                        level="WARN",
+                        source="EventEngine",
+                    )
                     return None
                 order_id = GatewayEngine.extract_order_id_from_place_response(
                     resp if isinstance(resp, dict) else None
                 )
 
                 if order_id is None and isinstance(resp, dict) and resp.get("Success") is not False:
-                    me.write_log(
+                    _log(
                         "place_order: Success=True but OrderDetail.OrderID missing (Roostoo Public API "
                         f"third_party/Roostoo-API-Documents/README.md) — strategy={data.strategy_name} "
                         f"symbol={data.symbol}",
@@ -206,6 +229,14 @@ class EventEngine(BaseEngine):
                     oid = str(order_id)
                     strat = getattr(data, "strategy_name", None) or "default"
                     api_detail = resp.get("OrderDetail") if isinstance(resp, dict) else None
+                    _log(
+                        f"[EventEngine] INTENT_PLACE_ORDER accepted: order_id={oid} strategy={strat} "
+                        f"symbol={data.symbol} side={data.side} qty={float(data.quantity)} "
+                        f"price={float(data.price) if data.price is not None else 0.0} "
+                        f"type={data.order_type} | registering into GatewayEngine",
+                        level="INFO",
+                        source="EventEngine",
+                    )
                     me.gateway_engine.register_order(
                         strategy_name=str(strat),
                         order_id=oid,

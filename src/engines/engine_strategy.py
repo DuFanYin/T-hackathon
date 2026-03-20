@@ -139,6 +139,12 @@ class StrategyEngine(BaseEngine):
                     )
             pos.quantity += delta
             pos.cost_value = _round_digits(pos.avg_cost * pos.quantity, 6) if pos.avg_cost else 0.0
+            self.log(
+                f"[StrategyHoldings] FILLED BUY: strategy={strategy_name} symbol={symbol} order_id={order_id} "
+                f"delta={delta:.8f} new_qty={pos.quantity:.8f} filled_avg={filled_avg:.8f} avg_cost={pos.avg_cost:.8f}",
+                level="INFO",
+                source="StrategyEngine",
+            )
             return
 
         if side == "SELL":
@@ -150,6 +156,12 @@ class StrategyEngine(BaseEngine):
                 pos.cost_value = 0.0
             else:
                 pos.cost_value = _round_digits(pos.avg_cost * pos.quantity, 6)
+            self.log(
+                f"[StrategyHoldings] FILLED SELL: strategy={strategy_name} symbol={symbol} order_id={order_id} "
+                f"delta={delta:.8f} new_qty={pos.quantity:.8f} filled_avg={filled_avg:.8f} avg_cost={pos.avg_cost:.8f}",
+                level="INFO",
+                source="StrategyEngine",
+            )
             return
 
         raise ValueError(f"Unknown order side: {side}")

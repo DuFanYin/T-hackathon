@@ -18,7 +18,7 @@ from src.engines.engine_main import MainEngine
 from src.engines.engine_market import MarketEngine
 from src.engines.engine_strategy import StrategyEngine
 from src.strategies.factory import StrategyJH, StrategyMaliki
-from src.strategies.factory.strategy_JH import PAIRS_CONFIG, _round_price, _round_qty
+from src.strategies.factory.strategy_JH import PAIRS_CONFIG, _round_price
 from src.strategies.factory.strategy_maliki import TRACKED_COINS
 from src.strategies.template import StrategyTemplate
 from src.utilities.object import (
@@ -29,6 +29,18 @@ from src.utilities.object import (
 # ═══════════════════════════════════════════════════
 # Shared helpers
 # ═══════════════════════════════════════════════════
+
+
+def _round_qty(value: float, decimals: int) -> float:
+    """
+    Match StrategyJH entry sizing behavior: truncate (not half-up round)
+    to `decimals` fractional places.
+    """
+    dec = int(decimals)
+    if dec <= 0:
+        return int(float(value))
+    factor = 10.0**dec
+    return int(float(value) * factor) / factor
 
 
 def _mock_main():

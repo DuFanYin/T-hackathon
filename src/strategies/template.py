@@ -274,7 +274,26 @@ class StrategyTemplate:
             order_type=order_type,
             strategy_name=self.strategy_name,
         )
-        return self._main.handle_intent(INTENT_PLACE_ORDER, req)
+        # Keep a "who/what/intent" breadcrumb in logs even when the order stays pending.
+        self.write_log(
+            f"[{self.strategy_name}] SEND_ORDER intent={req.order_type} side={req.side} "
+            f"symbol={req.symbol} qty={req.quantity} price={req.price}",
+            level="DEBUG",
+        )
+        oid = self._main.handle_intent(INTENT_PLACE_ORDER, req)
+        if oid:
+            self.write_log(
+                f"[{self.strategy_name}] SEND_ORDER accepted order_id={oid} symbol={req.symbol} side={req.side} "
+                f"type={req.order_type} qty={req.quantity} price={req.price}",
+                level="INFO",
+            )
+        else:
+            self.write_log(
+                f"[{self.strategy_name}] SEND_ORDER no order_id returned (may be rejected) symbol={req.symbol} side={req.side} "
+                f"type={req.order_type} qty={req.quantity} price={req.price}",
+                level="WARN",
+            )
+        return oid
 
     def get_symbol(self, symbol: str) -> Any | None:
         if self._main.gateway_engine is None:
