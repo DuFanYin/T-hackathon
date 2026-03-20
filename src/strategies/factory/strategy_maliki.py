@@ -207,7 +207,7 @@ class StrategyMaliki(StrategyTemplate):
         me = getattr(self._main, "market_engine", None)
         btc_bars = me.get_bar_count("BTCUSDT", self.interval.binance) if me else 0
         warmup_ok = self._has_enough_data()
-        rebal_this = self._tick_count % self.rebalance_every == 0
+        rebal_this = (self._tick_count % self.rebalance_every == 0) or (self._tick_count == 1)
         self.write_log(
             f"[strategy_maliki] TIMER | tick={self._tick_count} | btc_bars={btc_bars}/"
             f"{self.regime_ma_candles} warmup_ok={warmup_ok} | rebalance_this_step={rebal_this} "
