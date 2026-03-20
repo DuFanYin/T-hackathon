@@ -32,6 +32,7 @@ def _make_main_with_real_gateway():
     main = SimpleNamespace()
     main.active_pairs = []
     main.trading_pairs = []
+    main.trading_pairs_by_symbol = {}
     main.market_engine = MarketEngine(main_engine=None)
     main.put_event = MagicMock()
     main.strategy_engine = StrategyEngine(main_engine=main)
@@ -39,6 +40,38 @@ def _make_main_with_real_gateway():
     main.event_engine = EventEngine(main_engine=main)
     main.gateway_engine = GatewayEngine(main_engine=main, env_mode="mock")
     main.gateway_engine.trading_pairs = []
+
+    # Populate gateway precision data from exchangeInfo so the safety net
+    # doesn't reject orders for unknown pairs.
+    try:
+        info = main.gateway_engine.get_exchange_info()
+        if isinstance(info, dict) and isinstance(info.get("TradePairs"), dict):
+            from src.utilities.object import TradingPair as _TP
+            for pair_key, spec in info["TradePairs"].items():
+                symbol = GatewayEngine._from_roostoo_pair(str(pair_key))
+                if symbol:
+                    tp = _TP.from_exchange_entry(str(pair_key), spec, symbol=symbol)
+                    main.gateway_engine.trading_pairs_by_symbol[symbol] = tp
+                    main.trading_pairs_by_symbol[symbol] = tp
+    except Exception:
+        pass
+
+    # If exchangeInfo failed, load fallback precision for test pairs.
+    if not main.gateway_engine.trading_pairs_by_symbol:
+        from src.engines.engine_main import _FALLBACK_PAIR_RULES
+        from src.utilities.object import TradingPair as _TP
+        for sym, rules in _FALLBACK_PAIR_RULES.items():
+            base = sym.replace("USDT", "")
+            tp = _TP(pair=f"{base}/USD", symbol=sym, coin=base, unit="USD",
+                     can_trade=True, price_precision=int(rules["price_precision"]),
+                     amount_precision=int(rules["amount_precision"]),
+                     mini_order=float(rules["mini_order"]))
+            main.gateway_engine.trading_pairs_by_symbol[sym] = tp
+            main.trading_pairs_by_symbol[sym] = tp
+
+    main.get_trading_pair = lambda sym: main.trading_pairs_by_symbol.get(
+        str(sym).strip().upper()
+    )
 
     # MainEngine facade methods used by EventEngine.handle_intent.
     main.place_order = lambda **kwargs: main.gateway_engine.place_order(**kwargs)

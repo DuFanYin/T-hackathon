@@ -314,6 +314,15 @@ class GatewayEngine(BaseEngine):
             params["pair"] = self._to_roostoo_pair(symbol)
         return self._request_get("/v3/ticker", params=params, signed=False)
 
+    @staticmethod
+    def _round_to_precision(value: float, decimals: int) -> float:
+        """Round value to the given number of decimal places (half-up)."""
+        if decimals < 0:
+            return value
+        factor = 10.0 ** decimals
+        import math
+        return math.floor(value * factor + 0.5) / factor
+
     def place_order(
         self,
         symbol: str,
@@ -322,26 +331,69 @@ class GatewayEngine(BaseEngine):
         price: float | None = None,
         order_type: str | None = None,
     ) -> Dict[str, Any] | None:
-        """POST /v3/place_order (SIGNED). Returns raw API response dict or None."""
-        pair = self._to_roostoo_pair(symbol)
+        """POST /v3/place_order (SIGNED). Returns raw API response dict or None.
+
+        Safety net: looks up TradingPair precision and rounds qty/price
+        before sending. Rejects orders for unknown pairs (they would fail
+        with step-size errors anyway).
+        """
+        sym = str(symbol).strip().upper()
+        pair = self._to_roostoo_pair(sym)
+        ot = (order_type or ("MARKET" if price is None else "LIMIT")).upper()
+
+        # ── Gateway precision safety net ──
+        tp = self.trading_pairs_by_symbol.get(sym)
+        if tp is None:
+            self.log(
+                f"REJECTED: place_order for unknown pair {sym} | "
+                "no TradingPair precision data — order would be sent unrounded. "
+                "Check /v3/exchangeInfo discovery or fallback table.",
+                level="ERROR",
+                source="Gateway",
+            )
+            return {"Success": False, "ErrorCode": "NO_PRECISION_DATA",
+                    "ErrorMessage": f"No TradingPair for {sym}; order rejected to prevent step-size error"}
+
+        rounded_qty = self._round_to_precision(float(quantity), tp.amount_precision)
+        if rounded_qty <= 0:
+            self.log(
+                f"REJECTED: place_order {sym} qty={quantity} rounds to {rounded_qty} "
+                f"(amount_precision={tp.amount_precision}) — would be zero/negative",
+                level="ERROR",
+                source="Gateway",
+            )
+            return {"Success": False, "ErrorCode": "QTY_ROUNDS_TO_ZERO",
+                    "ErrorMessage": f"qty {quantity} rounds to {rounded_qty} at precision {tp.amount_precision}"}
+
+        rounded_price: float | None = price
+        if ot == "LIMIT" and price is not None and price > 0:
+            rounded_price = self._round_to_precision(float(price), tp.price_precision)
+
         payload: Dict[str, Any] = {
             "timestamp": self._ts_ms(),
             "pair": pair,
             "side": side,
-            "quantity": quantity,
+            "quantity": rounded_qty,
         }
 
-        inferred = "MARKET" if price is None else "LIMIT"
-        payload["type"] = (order_type or inferred).upper()
-        if payload["type"] == "LIMIT":
-            payload["price"] = float(price if price is not None else 0.0)
+        payload["type"] = ot
+        if ot == "LIMIT":
+            payload["price"] = float(rounded_price if rounded_price is not None else 0.0)
+
+        if rounded_qty != quantity or (ot == "LIMIT" and rounded_price != price):
+            self.log(
+                f"precision: {sym} qty {quantity}→{rounded_qty} (amt_prec={tp.amount_precision})"
+                + (f" price {price}→{rounded_price} (px_prec={tp.price_precision})" if ot == "LIMIT" else ""),
+                level="DEBUG",
+                source="Gateway",
+            )
 
         resp = self._request_post("/v3/place_order", data=payload, signed=True)
         if isinstance(resp, dict) and resp.get("Success") is False:
             err_code = resp.get("ErrorCode", resp.get("Code", ""))
             err_msg = resp.get("ErrorMessage", resp.get("Message", str(resp)[:300]))
             self.log(
-                f"ERROR: place_order failed | pair={pair} side={side} qty={quantity} type={payload['type']} | "
+                f"ERROR: place_order failed | pair={pair} side={side} qty={rounded_qty} type={ot} | "
                 f"Success=False ErrorCode={err_code} ErrorMessage={err_msg}",
                 level="ERROR",
                 source="Gateway",
