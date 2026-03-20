@@ -3,7 +3,7 @@ import { api } from '../lib/api';
 import { formatEngineClock } from '../lib/engineTime';
 import type { Holding, RunningStrategy } from '../lib/types';
 
-export type Tab = 'Strategies' | 'Logs';
+export type Tab = 'Strategies' | 'Health' | 'Logs';
 
 interface SidebarProps {
   tab: Tab;
@@ -30,7 +30,7 @@ export const Sidebar: FC<SidebarProps> = ({
   onRefresh,
   onEngineStart,
 }) => {
-  const tabs: Tab[] = ['Strategies', 'Logs'];
+  const tabs: Tab[] = ['Strategies', 'Health', 'Logs'];
   const [now, setNow] = useState<Date>(() => new Date());
 
   useEffect(() => {
