@@ -11,6 +11,7 @@ import { StrategiesPanel } from './components/StrategiesPanel';
 import { AccountValuePanel } from './components/AccountValuePanel';
 import { OrdersPanel } from './components/OrdersPanel';
 import { LogsPanel } from './components/LogsPanel';
+import { StrategyHealthPanel } from './components/StrategyHealthPanel';
 
 function HeaderBar({ title, extra }: { title: string; extra?: ReactNode }) {
   return (
@@ -201,6 +202,14 @@ function AppShell() {
                 />
               </div>
             </div>
+          )}
+
+          {tab === 'Health' && (
+            <StrategyHealthPanel
+              running={running}
+              holdings={positions}
+              engineRunning={system.running}
+            />
           )}
 
           {tab === 'Logs' && (

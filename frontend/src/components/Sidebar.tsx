@@ -2,7 +2,7 @@ import { useEffect, useState, type FC } from 'react';
 import { api } from '../lib/api';
 import type { Holding, RunningStrategy } from '../lib/types';
 
-export type Tab = 'Strategies' | 'Logs';
+export type Tab = 'Strategies' | 'Health' | 'Logs';
 
 interface SidebarProps {
   tab: Tab;
@@ -31,7 +31,7 @@ export const Sidebar: FC<SidebarProps> = ({
   onAuthToken,
   onRefresh,
 }) => {
-  const tabs: Tab[] = ['Strategies', 'Logs'];
+  const tabs: Tab[] = ['Strategies', 'Health', 'Logs'];
   const [now, setNow] = useState<Date>(() => new Date());
 
   useEffect(() => {
