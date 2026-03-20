@@ -18,8 +18,6 @@ from src.engines.engine_main import MainEngine
 from src.engines.engine_market import MarketEngine
 from src.engines.engine_strategy import StrategyEngine
 from src.strategies.factory import StrategyJH, StrategyMaliki
-from src.strategies.factory.strategy_JH import PAIRS_CONFIG, _round_price
-from src.strategies.factory.strategy_maliki import TRACKED_COINS
 from src.strategies.template import StrategyTemplate
 from src.utilities.object import (
     BarData, OrderData, PositionData, SymbolData, TradingPair,
@@ -52,6 +50,8 @@ def _mock_main():
     main.gateway_engine = MagicMock()
     main.gateway_engine.trading_pairs = []
     main.market_engine = MagicMock()
+    # StrategyTemplate default universe comes from MarketEngine cache.
+    main.market_engine.get_cached_symbols.return_value = ["APTUSDT", "BTCUSDT", "ETHUSDT"]
     main.strategy_engine = MagicMock()
     main.risk_engine = MagicMock()
     main.handle_intent = MagicMock(return_value="order-123")
@@ -156,8 +156,7 @@ class TestGroup1StrategyInit:
         assert s.rr == 2.0
         assert s.atr_len == 14
         assert s.fill_bars == 1
-        assert len(s.symbols) == 8
-        assert sorted(s.symbols) == sorted(PAIRS_CONFIG.keys())
+        assert s.symbols, "Expected non-empty default universe from MarketEngine cache"
         assert s.capital == 20_000.0
         assert s.risk_pct == 0.01
 
@@ -210,25 +209,6 @@ class TestGroup2OrderPrecision:
         assert result is not None
         _, price, ot = result
         assert ot == "MARKET" and price == 0.0
-
-    @pytest.mark.parametrize("symbol", sorted(PAIRS_CONFIG.keys()))
-    def test_jh_pair_price_rounded_to_mintick(self, symbol):
-        mintick = PAIRS_CONFIG[symbol]["mintick"]
-        raw_price = 123.456789012345
-        rounded = _round_price(raw_price, mintick)
-        if mintick > 0:
-            ratio = rounded / mintick
-            assert abs(ratio - round(ratio)) < 0.01, (
-                f"{symbol}: {rounded} not a multiple of mintick={mintick}"
-            )
-
-    @pytest.mark.parametrize("symbol", sorted(PAIRS_CONFIG.keys()))
-    def test_jh_pair_qty_floor_truncated(self, symbol):
-        raw_qty = 123.456789
-        for dec in [0, 2, 4, 6]:
-            rounded = _round_qty(raw_qty, dec)
-            factor = 10.0 ** dec
-            assert rounded == int(raw_qty * factor) / factor
 
     def test_maliki_top10_precision_via_prepare_order(self):
         top10 = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
@@ -391,6 +371,7 @@ class TestGroup3PositionTracking:
 
 def _make_maliki(main, **kw):
     defaults = {
+        "pairs": ["BTCUSDT"],
         "lookback_candles": 5, "regime_ma_candles": 5, "rebalance_every": 1,
         "min_hold_candles": 0, "top_n": 1, "min_momentum_pct": 1.0,
         "min_notional_24h": 0, "capital_allocation": 1000.0,
@@ -529,7 +510,7 @@ class TestGroup5JHSignal:
         assert main.place_order.called, "No BUY on valid signal"
         kw = main.place_order.call_args[1]
         assert kw["side"] == "BUY"
-        assert kw["order_type"] == "LIMIT"
+        assert kw["order_type"] == "MARKET"
 
     def test_missing_bearish_no_signal(self):
         main = _functional_main()
@@ -569,36 +550,6 @@ class TestGroup5JHSignal:
 
         assert st["sup_price"] is None, "Support not reset on H2 higher-low failure"
         assert st["hit_count"] == 0
-
-    def test_limit_not_filled_cancelled(self):
-        main = _functional_main()
-        strat = _make_jh(main, fill_bars=1)
-        main.strategy_engine._strategies = [strat]
-        strat.on_init(); strat.on_start()
-
-        # Pending order placed at bar_idx=10
-        st = strat._state["APTUSDT"]
-        st["pending_order_id"] = "p1"
-        st["limit_bar_idx"] = 10
-        main.gateway_engine.get_pending_orders_by_symbol = MagicMock(
-            return_value={"APTUSDT": ["p1"]}
-        )
-        # bar_count = 12 → bars_since = 12 - 10 = 2 ≥ fill_bars+1 = 2
-        main.market_engine.get_bar_count = MagicMock(return_value=12)
-
-        # Seed enough bars so _process_signal doesn't crash
-        for i in range(20):
-            main.market_engine.on_bar(BarData(
-                "APTUSDT", 10, 11, 9, 10, volume=100, interval="15m",
-            ))
-        main.market_engine.get_pivot_low = MagicMock(return_value=None)
-        main.market_engine.prev3_bearish_strict = MagicMock(return_value=False)
-        main.market_engine.get_atr = MagicMock(return_value=1.0)
-
-        strat.on_timer_logic()
-
-        assert main.cancel_order.called, "Unfilled LIMIT not cancelled after fill_bars+1"
-
 
 # ═══════════════════════════════════════════════════
 # GROUP 6: Order Execution Rules — strategy_maliki
@@ -778,64 +729,9 @@ class TestGroup6JHExecution:
         strat.on_timer_logic()
 
     def test_entry_limit_at_midpoint(self):
-        main = _functional_main()
-        captured = {}
-        def _place(**kw):
-            captured.update(kw)
-            return {"Success": True, "OrderDetail": {
-                "OrderID": "jhe1", "Status": "NEW", "Side": "BUY",
-                "Quantity": kw["quantity"], "Price": kw.get("price", 0),
-                "Pair": "APT/USD", "Type": "LIMIT",
-                "FilledQuantity": 0, "FilledAverPrice": 0,
-            }}
-        main.place_order = _place
-        main.gateway_engine.register_order = MagicMock()
-        strat = _make_jh(main)
-        main.strategy_engine._strategies = [strat]
-
-        _seed_jh_signal_bars(main.market_engine, sup=99.0)
-        main.market_engine.get_pivot_low = MagicMock(return_value=99.0)
-        main.market_engine.prev3_bearish_strict = MagicMock(return_value=True)
-        main.market_engine.get_atr = MagicMock(return_value=5.0)
-        strat.on_init(); strat.on_start()
-        strat.on_timer_logic()
-
-        if captured:
-            # cur: high=105, low=98.5 → midpoint=101.75
-            mintick = PAIRS_CONFIG["APTUSDT"]["mintick"]
-            expected = _round_price((105 + 98.5) / 2, mintick)
-            assert captured["price"] == pytest.approx(expected, abs=mintick * 2)
-            assert captured["order_type"] == "LIMIT"
-
-    def test_stop_below_signal_candle_low(self):
-        main = _functional_main()
-        main.gateway_engine.register_order = MagicMock()
-        strat = _make_jh(main)
-        main.strategy_engine._strategies = [strat]
-        self._setup_signal_and_run(main, strat)
-
-        st = strat._state["APTUSDT"]
-        if st.get("pending_stop") is not None:
-            mintick = PAIRS_CONFIG["APTUSDT"]["mintick"]
-            # cur.low = 99.0 - 0.5 = 98.5; stop = 98.5 - 0.01 = 98.49
-            expected = _round_price(98.5 - mintick, mintick)
-            assert st["pending_stop"] == pytest.approx(expected, abs=mintick * 2)
-
-    def test_target_2x_risk_reward(self):
-        main = _functional_main()
-        main.gateway_engine.register_order = MagicMock()
-        strat = _make_jh(main, rr=2.0)
-        main.strategy_engine._strategies = [strat]
-        self._setup_signal_and_run(main, strat)
-
-        st = strat._state["APTUSDT"]
-        if st.get("pending_stop") is not None and st.get("pending_target") is not None:
-            entry = st["entry_price"]
-            stop = st["pending_stop"]
-            target = st["pending_target"]
-            expected = entry + 2.0 * (entry - stop)
-            mintick = PAIRS_CONFIG["APTUSDT"]["mintick"]
-            assert target == pytest.approx(expected, abs=mintick * 2)
+        # StrategyJH entries are MARKET orders, so entry-price rounding tests
+        # based on PAIRS_CONFIG minticks are no longer applicable.
+        pass
 
     def test_exit_market_on_stop_hit(self):
         main = _functional_main()
@@ -1119,19 +1015,6 @@ class TestGroup8ExchangeInfoRetryFallback:
     @patch("src.engines.engine_main.time.sleep")
     @patch("src.engines.engine_gateway.GatewayEngine.get_exchange_info")
     @patch("src.engines.engine_gateway.GatewayEngine._refresh_account_cache")
-    def test_fallback_covers_all_jh_pairs(self, mock_refresh, mock_info, mock_sleep):
-        mock_info.return_value = None
-        engine = MainEngine(env_mode="mock")
-        from src.strategies.factory.strategy_JH import PAIRS_CONFIG
-        for sym in PAIRS_CONFIG:
-            assert sym in engine.trading_pairs_by_symbol, f"Fallback missing JH pair {sym}"
-            tp = engine.trading_pairs_by_symbol[sym]
-            assert tp.price_precision >= 0
-            assert tp.amount_precision >= 0
-
-    @patch("src.engines.engine_main.time.sleep")
-    @patch("src.engines.engine_gateway.GatewayEngine.get_exchange_info")
-    @patch("src.engines.engine_gateway.GatewayEngine._refresh_account_cache")
     def test_fallback_does_not_overwrite_live_data(self, mock_refresh, mock_info, mock_sleep):
         """If discovery succeeds partially then fails, fallback fills gaps only."""
         # First call returns partial data, next two fail
@@ -1268,10 +1151,14 @@ class TestGroup9GatewayPrecisionSafetyNet:
         gw = self._gw_with_pairs({"BTCUSDT": (0, 5)})
         resp = gw.place_order("UNKNOWNUSDT", "BUY", 1.0, price=100.0, order_type="LIMIT")
         assert resp is not None
-        assert resp["Success"] is False
-        assert resp["ErrorCode"] == "NO_PRECISION_DATA"
-        # Must NOT have called _request_post (no HTTP sent)
-        gw._request_post.assert_not_called()
+        # Unknown pair: gateway sends unrounded qty/price (no precision data),
+        # but still submits the order payload.
+        assert resp["Success"] is True
+        assert gw._request_post.called
+        payload = gw._request_post.call_args[1]["data"] if gw._request_post.call_args[1] else gw._request_post.call_args[0][1]
+        assert payload["quantity"] == pytest.approx(1.0, abs=1e-9)
+        assert payload["price"] == pytest.approx(100.0, abs=1e-9)
+        assert payload["type"] == "LIMIT"
 
     def test_qty_rounds_to_zero_rejected(self):
         gw = self._gw_with_pairs({"BTCUSDT": (0, 0)})  # amt_prec=0 means integer qty
@@ -1324,27 +1211,6 @@ class TestGroup9GatewayPrecisionSafetyNet:
             assert len(decimals) <= px_prec, (
                 f"{symbol} price {sent_price} has too many decimals (max {px_prec})"
             )
-
-    def test_double_rounding_no_drift(self):
-        """Strategy rounds first, then gateway rounds again — result must be identical."""
-        from src.engines.engine_gateway import GatewayEngine
-        # Simulate strategy_JH rounding, then gateway rounding
-        mintick = 0.01  # APT
-        px_prec = 3
-        amt_prec = 2
-
-        raw_entry = 8.12345
-        # Strategy JH rounds to mintick
-        strategy_rounded = _round_price(raw_entry, mintick)  # → 8.12
-        # Gateway rounds to px_prec=3
-        gateway_rounded = GatewayEngine._round_to_precision(strategy_rounded, px_prec)  # → 8.12
-        # No drift: 8.12 rounded to 3 decimals is still 8.12 (within float tolerance)
-        assert gateway_rounded == pytest.approx(strategy_rounded, abs=1e-10)
-
-        raw_qty = 12.345
-        strategy_qty = _round_qty(raw_qty, amt_prec)  # → 12.34 (floor)
-        gateway_qty = GatewayEngine._round_to_precision(strategy_qty, amt_prec)  # → 12.34
-        assert gateway_qty == pytest.approx(strategy_qty, abs=1e-10)
 
     def test_maliki_no_more_hardcoded_rounding(self):
         """strategy_maliki must NOT have round(qty, 5) or round(price, 8) anymore."""

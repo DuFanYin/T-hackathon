@@ -24,21 +24,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("strategy_maliki")
 
-# Assets to track in MarketEngine symbol format (internal symbols like BTCUSDT).
-#
-# Using internal symbols makes this strategy compatible with the system's
-# MarketEngine/Gateway symbol conventions without extra conversions.
-TRACKED_COINS = [
-    # Large cap
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT", "LINKUSDT",
-    "AVAXUSDT", "LTCUSDT", "TONUSDT", "XLMUSDT", "HBARUSDT", "SUIUSDT",
-    # Mid cap
-    "UNIUSDT", "AAVEUSDT", "FILUSDT", "ICPUSDT", "NEARUSDT", "APTUSDT", "FETUSDT", "SEIUSDT", "TAOUSDT",
-    "PENDLEUSDT", "ENAUSDT", "ONDOUSDT", "ARBUSDT", "CRVUSDT", "WLDUSDT", "EIGENUSDT", "CAKEUSDT", "TRXUSDT", "CFXUSDT",
-    # Meme
-    "PEPEUSDT", "SHIBUSDT", "BONKUSDT", "FLOKIUSDT", "WIFUSDT", "TRUMPUSDT", "PENGUUSDT",
-]
-
 
 class StrategyMaliki(StrategyTemplate):
     """
@@ -62,9 +47,6 @@ class StrategyMaliki(StrategyTemplate):
         s.setdefault("timer_trigger", 300)
         s.setdefault("interval", "5m")  # This strategy uses 5m bars
         super().__init__(main_engine, strategy_name, s)
-
-        # Strategy-owned symbol universe (internal MarketEngine symbols, e.g. BTCUSDT).
-        self.symbols = list(TRACKED_COINS)
 
         # ── Strategy parameters ──
         # 48h lookback on 5m bars = 48*60/5 = 576 candles.
@@ -181,8 +163,8 @@ class StrategyMaliki(StrategyTemplate):
         reqs.append({"symbol": "BTCUSDT", "interval": ival, "bars": int(self.regime_ma_candles)})
         # Momentum calculations need lookback window for each tracked coin.
         lookback = int(self.lookback_candles)
-        for c in TRACKED_COINS:
-            # TRACKED_COINS already uses internal MarketEngine symbols like BTCUSDT.
+        for c in self.symbols:
+            # `self.symbols` uses internal MarketEngine symbols like BTCUSDT.
             reqs.append({"symbol": c, "interval": ival, "bars": lookback})
         return reqs
 
@@ -252,7 +234,7 @@ class StrategyMaliki(StrategyTemplate):
         me = getattr(self._main, "market_engine", None)
         if not me:
             return prices
-        for asset_symbol in TRACKED_COINS:
+        for asset_symbol in self.symbols:
             coin = self._symbol_to_coin(asset_symbol)
             sd = me.get_symbol(asset_symbol)
             if sd and getattr(sd, "last_price", 0.0) > 0:
@@ -297,7 +279,7 @@ class StrategyMaliki(StrategyTemplate):
             return []
         rankings: list[dict] = []
         vol_window = 288  # 24h on 5m bars
-        for asset_symbol in TRACKED_COINS:
+        for asset_symbol in self.symbols:
             coin = self._symbol_to_coin(asset_symbol)
             bars = me.get_last_bars(asset_symbol, self.lookback_candles, self.interval.binance)
             if len(bars) < self.lookback_candles:

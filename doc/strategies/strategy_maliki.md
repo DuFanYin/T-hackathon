@@ -1,6 +1,6 @@
 ## `strategy_maliki`
 
-Multi-asset **momentum rotation** with a **BTC regime filter** (`StrategyMaliki` in `src/strategies/factory/strategy_maliki.py`). Universe: hard-coded **`TRACKED_COINS`** (internal symbols like `BTCUSDT`); not overridden by `setting`.
+Multi-asset **momentum rotation** with a **BTC regime filter** (`StrategyMaliki` in `src/strategies/factory/strategy_maliki.py`). Universe: uses all internal symbols cached in `MarketEngine` at startup (override with `setting["pairs"]`).
 
 ### Trading logic (tree)
 
@@ -9,7 +9,7 @@ STRATEGY STEP (timer_trigger=300: ~5m per step if EventEngine interval=1s)
 ├─ Warmup ok? BTC get_bar_count(BTCUSDT, 5m) >= regime_ma_candles
 │  ├─ no → every 10 ticks log "Warming up...", return
 │  └─ yes
-├─ _get_current_prices(): last_price per TRACKED_COINS from MarketEngine.get_symbol
+├─ _get_current_prices(): last_price per `self.symbols` from MarketEngine.get_symbol
 ├─ if no prices → return
 │
 ├─ TRAILING — _check_trailing_stops (each strategy step)
@@ -26,7 +26,7 @@ STRATEGY STEP (timer_trigger=300: ~5m per step if EventEngine interval=1s)
    │  │  │     ├─ ticks_held >= min_hold_candles → SELL MARKET (regime_bearish)
    │  │  │     └─ else → keep
    │  │  └─ YES (bullish)
-   │  │     ├─ _get_momentum_rankings over TRACKED_COINS
+   │  │     ├─ _get_momentum_rankings over `self.symbols`
    │  │     │  ├─ for each coin: need lookback_candles bars on 5m
    │  │     │  ├─ skip: notional_24h = sum(vol*close) over 288 bars < min_notional_24h
    │  │     │  ├─ momentum_pct = (last_close - first_close)/first_close*100
@@ -86,5 +86,5 @@ STRATEGY STEP (timer_trigger=300: ~5m per step if EventEngine interval=1s)
 ### Lifecycle / integration
 
 - **Registry**: `strategy_maliki` in `AVAILABLE_STRATEGIES`.
-- **History**: `history_requirements()` — BTC `regime_ma_candles` + each `TRACKED_COINS` symbol `lookback_candles` at `5m`.
+- **History**: `history_requirements()` — BTC `regime_ma_candles` + each `self.symbols` symbol `lookback_candles` at `5m`.
 - **Stop**: `on_stop_logic` → `clear_all_positions()`.

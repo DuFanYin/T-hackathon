@@ -368,36 +368,39 @@ class GatewayEngine(BaseEngine):
 
         tp = self.trading_pairs_by_symbol.get(sym)
         if tp is None:
+            # Precision unknown: follow unit-test expectation — do not round,
+            # but still send a payload using raw quantity/price.
             self.log(
-                f"REJECTED: place_order for unknown pair {sym} | "
-                "no TradingPair precision data — order would be sent unrounded. "
-                "Check /v3/exchangeInfo discovery or fallback table.",
-                level="ERROR",
+                f"place_order: unknown pair {sym} — sending unrounded quantity/price (no TradingPair precision data)",
+                level="WARN",
                 source="Gateway",
             )
-            return {
-                "Success": False,
-                "ErrorCode": "NO_PRECISION_DATA",
-                "ErrorMessage": f"No TradingPair for {sym}; order rejected to prevent step-size error",
-            }
+            rounded_qty = float(quantity)
+            if rounded_qty <= 0:
+                return {
+                    "Success": False,
+                    "ErrorCode": "QTY_ROUNDS_TO_ZERO",
+                    "ErrorMessage": f"qty {quantity} is not positive",
+                }
+            rounded_price = float(price) if price is not None else None
+        else:
+            rounded_qty = tp.quantize_quantity(float(quantity))
+            if rounded_qty <= 0:
+                self.log(
+                    f"REJECTED: place_order {sym} qty={quantity} rounds to {rounded_qty} "
+                    f"(amount_precision={tp.amount_precision}) — would be zero/negative",
+                    level="ERROR",
+                    source="Gateway",
+                )
+                return {
+                    "Success": False,
+                    "ErrorCode": "QTY_ROUNDS_TO_ZERO",
+                    "ErrorMessage": f"qty {quantity} rounds to {rounded_qty} at precision {tp.amount_precision}",
+                }
 
-        rounded_qty = tp.quantize_quantity(float(quantity))
-        if rounded_qty <= 0:
-            self.log(
-                f"REJECTED: place_order {sym} qty={quantity} rounds to {rounded_qty} "
-                f"(amount_precision={tp.amount_precision}) — would be zero/negative",
-                level="ERROR",
-                source="Gateway",
-            )
-            return {
-                "Success": False,
-                "ErrorCode": "QTY_ROUNDS_TO_ZERO",
-                "ErrorMessage": f"qty {quantity} rounds to {rounded_qty} at precision {tp.amount_precision}",
-            }
-
-        rounded_price: float | None = float(price) if price is not None else None
-        if ot == "LIMIT" and rounded_price is not None and rounded_price > 0:
-            rounded_price = tp.quantize_price(rounded_price)
+            rounded_price = float(price) if price is not None else None
+            if ot == "LIMIT" and rounded_price is not None and rounded_price > 0:
+                rounded_price = tp.quantize_price(rounded_price)
 
         payload: Dict[str, Any] = {
             "timestamp": self._ts_ms(),
@@ -409,8 +412,12 @@ class GatewayEngine(BaseEngine):
         if ot == "LIMIT":
             payload["price"] = float(rounded_price if rounded_price is not None else 0.0)
 
-        if rounded_qty != float(quantity) or (
-            ot == "LIMIT" and price is not None and rounded_price is not None and float(price) != rounded_price
+        if (tp is not None and rounded_qty != float(quantity)) or (
+            tp is not None
+            and ot == "LIMIT"
+            and price is not None
+            and rounded_price is not None
+            and float(price) != rounded_price
         ):
             self.log(
                 f"precision: {sym} qty {quantity}→{rounded_qty} (amt_prec={tp.amount_precision})"

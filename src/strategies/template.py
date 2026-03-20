@@ -30,6 +30,35 @@ class StrategyTemplate:
         self.strategy_name = strategy_name
         setting = setting or {}
         self.symbols: list[str] = self._parse_symbols(setting)
+        if not self.symbols:
+            # Allow a simpler override key used by some strategies.
+            pairs_override = setting.get("pairs")
+
+            def normalize_one(x: Any) -> str:
+                s = str(x or "").strip().upper()
+                if not s:
+                    return ""
+                if "/" in s:
+                    raise ValueError(f"Unsupported symbol format {s!r}; expected internal like 'BTCUSDT'.")
+                if not s.endswith("USDT"):
+                    raise ValueError(f"Unsupported symbol format {s!r}; expected internal like 'BTCUSDT'.")
+                return s
+
+            if isinstance(pairs_override, list) and pairs_override:
+                items = [normalize_one(x) for x in pairs_override]
+                items = [x for x in items if x]
+                self.symbols = sorted(set(items))
+
+            # Default universe: use MarketEngine's cached symbols (seeded at startup).
+            if not self.symbols:
+                me = getattr(self._main, "market_engine", None)
+                if me and hasattr(me, "get_cached_symbols"):
+                    cached = me.get_cached_symbols()
+                    self.symbols = list(cached) if cached else []
+
+            # Final fallback: use any discovered trading pairs exposed by MainEngine.
+            if not self.symbols and hasattr(self._main, "get_all_trading_pairs"):
+                self.symbols = list(self._main.get_all_trading_pairs())
         self._timer_trigger: int = int(setting.get("timer_trigger", 1))
         # Each strategy uses one interval for bar data (e.g. 5m, 15m).
         self.interval: Interval = Interval.from_str(setting.get("interval"))
