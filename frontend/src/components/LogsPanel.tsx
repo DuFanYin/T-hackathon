@@ -78,7 +78,6 @@ function uniqueSources(logs: string[]): string[] {
 
 interface LogsPanelProps {
   logs: string[];
-  isAuthed: boolean;
   onTail: () => void;
   onClear: () => void;
   logBoxRef: MutableRefObject<HTMLDivElement | null>;
@@ -86,7 +85,6 @@ interface LogsPanelProps {
 
 export const LogsPanel: FC<LogsPanelProps> = ({
   logs,
-  isAuthed,
   onTail,
   onClear,
   logBoxRef,
@@ -130,14 +128,12 @@ export const LogsPanel: FC<LogsPanelProps> = ({
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <button
           className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/20"
-          disabled={!isAuthed}
           onClick={onTail}
         >
           Refresh
         </button>
         <button
           className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/10"
-          disabled={!isAuthed}
           onClick={onClear}
         >
           Clear

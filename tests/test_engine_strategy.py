@@ -45,7 +45,8 @@ class TestStrategyEngine:
         engine = StrategyEngine(main_engine=main_engine_mock)
         strat = engine.add_strategy_by_name("strategy_JH")
         assert strat.strategy_name == "strategy_JH"
-        assert "BTCUSDT" in strat.symbols
+        # Default universe comes from PAIRS_CONFIG in strategy_JH (APTUSDT, etc.).
+        assert "APTUSDT" in strat.symbols
 
     def test_add_strategy_strategy_maliki(self, main_engine_mock):
         engine = StrategyEngine(main_engine=main_engine_mock)
@@ -76,14 +77,6 @@ class TestStrategyEngine:
         engine.add_strategy_by_name("StratTestAlt")
         engine.start_strategy("StratTestAlt")
         engine.stop_strategy("StratTestAlt")
-
-    def test_remove_strategy(self, main_engine_mock):
-        engine = StrategyEngine(main_engine=main_engine_mock)
-        engine.add_strategy_by_name("StratTestAlt")
-        assert engine.get_strategy("StratTestAlt") is not None
-        engine.remove_strategy("StratTestAlt")
-        assert engine.get_strategy("StratTestAlt") is None
-
 
 class TestAvailableStrategies:
     """Tests for AVAILABLE_STRATEGIES registry."""

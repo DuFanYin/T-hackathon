@@ -102,19 +102,24 @@ function AppShell() {
       setRunning(r.running)
       setPositions(p.holdings || {})
 
-      if (isAuthed) {
-        try {
-          const [b, o, pnl] = await Promise.all([
-            api.accountBalance(),
-            api.accountOrders(),
-            api.accountPnl(),
-          ])
-          setAccountBalance(b.balance)
-          setAccountOrders(o.orders)
-          setAccountPnl(pnl)
+      try {
+        const [b, o, pnl] = await Promise.all([
+          api.accountBalance(),
+          api.accountOrders(),
+          api.accountPnl(),
+        ])
+        setAccountBalance(b.balance)
+        setAccountOrders(o.orders)
+        setAccountPnl(pnl)
+        setAccountErr('')
+      } catch (e: unknown) {
+        const msg = getErrorMessage(e)
+        // If account endpoints are still token-protected on backend, avoid noisy
+        // "401 no token" in non-control areas.
+        if (msg.includes('401')) {
           setAccountErr('')
-        } catch (e: unknown) {
-          setAccountErr(getErrorMessage(e))
+        } else {
+          setAccountErr(msg)
         }
       }
     } catch {
@@ -201,7 +206,6 @@ function AppShell() {
           {tab === 'Logs' && (
           <LogsPanel
             logs={logs}
-            isAuthed={isAuthed}
             onTail={refreshLogs}
             onClear={() => setLogs([])}
             logBoxRef={logBoxRef}

@@ -144,7 +144,8 @@ class TestStrategyMaliki:
         reqs = strat.history_requirements()
         assert len(reqs) >= len(TRACKED_COINS) + 1
         btc_req = next(r for r in reqs if r.get("symbol") == "BTCUSDT")
-        assert btc_req["bars"] == 288
+        # Regime MA now uses 48h (576 bars on 5m candles)
+        assert btc_req["bars"] == 576
 
     def test_has_enough_data_false_when_no_market(self):
         main = _main_engine_mock()
@@ -160,7 +161,8 @@ class TestStrategyMaliki:
 
     def test_has_enough_data_true_when_sufficient(self):
         main = _main_engine_mock()
-        main.market_engine.get_bar_count.return_value = 300
+        # Must be >= regime_ma_candles (default 576)
+        main.market_engine.get_bar_count.return_value = 600
         strat = StrategyMaliki(main, "strategy_maliki_Test")
         assert strat._has_enough_data() is True
 
