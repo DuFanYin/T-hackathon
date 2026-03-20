@@ -15,7 +15,6 @@ Default sizing fallback: capital_allocation=$20k when cached USD balance is unav
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import TYPE_CHECKING, Any
 
 from src.strategies.template import StrategyTemplate
@@ -520,26 +519,27 @@ class StrategyMaliki(StrategyTemplate):
         alloc = min(portfolio_value / max(self.top_n, 1), max_per)
 
         qty = alloc / price
-        # Round to reasonable precision
-        qty = round(qty, 5)
+        # Rounding is handled centrally by the gateway safety net
+        # (engine_gateway.place_order rounds to TradingPair.amount_precision).
 
         self.write_log(
             f"[strategy_maliki] ENTRY sizing | {coin} | usd_wallet={usd_balance:.2f} "
             f"fallback_capital={self.capital_allocation} → portfolio_value={portfolio_value:.2f} "
-            f"max_single%={self.max_single_alloc_pct} alloc=${alloc:,.2f} price={price:.6f} qty={qty:.5f}",
+            f"max_single%={self.max_single_alloc_pct} alloc=${alloc:,.2f} price={price:.6f} qty={qty:.8f}",
             level="INFO",
         )
 
         if qty <= 0 or alloc < 10:
             self.write_log(
-                f"[strategy_maliki] BUY {coin} skipped: qty={qty:.5f} alloc=${alloc:,.0f} (min $10)",
+                f"[strategy_maliki] BUY {coin} skipped: qty={qty:.8f} alloc=${alloc:,.0f} (min $10)",
                 level="WARN",
             )
             return
 
         # Use LIMIT order for lower commission
-        # Set limit slightly above current price to ensure fill
-        limit_price = round(price * 1.001, 8)
+        # Set limit slightly above current price to ensure fill.
+        # Gateway rounds to TradingPair.price_precision before sending.
+        limit_price = price * 1.001
 
         self.write_log(
             f"[strategy_maliki] BUY {coin} | qty={qty:.5f} limit={limit_price:.6f} ref={price:.6f} "
