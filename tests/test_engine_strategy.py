@@ -22,8 +22,6 @@ class TestStrategyEngine:
         main.gateway_engine = MagicMock()
         main.gateway_engine.trading_pairs = []
         main.market_engine = MagicMock()
-        # StrategyTemplate default universe comes from MarketEngine cache.
-        main.market_engine.get_cached_symbols.return_value = ["APTUSDT", "BTCUSDT"]
         return main
 
     def test_add_strategy_requires_main_engine(self):
@@ -47,7 +45,7 @@ class TestStrategyEngine:
         engine = StrategyEngine(main_engine=main_engine_mock)
         strat = engine.add_strategy_by_name("strategy_JH")
         assert strat.strategy_name == "strategy_JH"
-        # Default universe comes from MarketEngine cache via StrategyTemplate.
+        # Default universe comes from PAIRS_CONFIG in strategy_JH (APTUSDT, etc.).
         assert "APTUSDT" in strat.symbols
 
     def test_add_strategy_strategy_maliki(self, main_engine_mock):

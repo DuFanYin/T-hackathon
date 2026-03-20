@@ -42,41 +42,6 @@ def _make_main_with_real_gateway():
     main.gateway_engine = GatewayEngine(main_engine=main, env_mode="mock")
     main.gateway_engine.trading_pairs = []
 
-    # Avoid real HTTP in sandboxed test runs: mock the gateway write-path to
-    # always return a FILLED order detail so strategies register fills
-    # immediately and integration tests can assert on order_map/holdings.
-    #
-    # We keep the mocked response shaped like Roostoo's /v3/place_order:
-    # { "Success": True, "OrderDetail": { ... } }
-    place_counter = {"n": 0}
-
-    def _mock_request_post(path, data, signed):  # type: ignore[no-untyped-def]
-        if path != "/v3/place_order":
-            return {"Success": True}
-        place_counter["n"] += 1
-        oid = f"int-{place_counter['n']}"
-        pair = data.get("pair", "")
-        side = data.get("side", "")
-        qty = float(data.get("quantity", 0.0) or 0.0)
-        order_type = data.get("type", "LIMIT")
-        px = float(data.get("price", 0.0) or 0.0) if order_type == "LIMIT" else 0.0
-        return {
-            "Success": True,
-            "OrderDetail": {
-                "OrderID": oid,
-                "Status": "FILLED",
-                "Side": side,
-                "Quantity": qty,
-                "Price": px,
-                "Pair": pair,
-                "Type": order_type,
-                "FilledQuantity": qty,
-                "FilledAverPrice": px,
-            },
-        }
-
-    main.gateway_engine._request_post = _mock_request_post  # type: ignore[method-assign]
-
     # Populate gateway precision data from exchangeInfo so the safety net
     # doesn't reject orders for unknown pairs.
     try:
@@ -149,16 +114,7 @@ def _live_price_from_gateway(main, symbol: str) -> float:
     """Fetch one symbol price from Gateway ticker payload."""
     body = main.gateway_engine.get_ticker(symbol)
     if not isinstance(body, dict):
-        # In CI/sandbox the gateway ticker call may fail (network blocked),
-        # so fall back to MarketEngine cache or deterministic defaults.
-        sd = main.market_engine.get_symbol(symbol)
-        if sd and getattr(sd, "last_price", 0.0):
-            return float(sd.last_price)
-        if symbol == "BTCUSDT":
-            return 100000.0
-        if symbol == "APTUSDT":
-            return 8.0
-        return 100.0
+        raise AssertionError(f"ticker not dict for {symbol}: {body!r}")
     if body.get("Success") is False:
         raise AssertionError(f"ticker failed for {symbol}: {body!r}")
     pair = GatewayEngine._to_roostoo_pair(symbol)
@@ -198,58 +154,62 @@ def test_integration_strategy_maliki_open_then_close_updates_holdings():
         return resp
 
     main.gateway_engine.place_order = _trace_place
-    strat = StrategyMaliki(
-        main,
-        "strategy_maliki_Int",
-        setting={
-            "pairs": ["BTCUSDT"],
-            "lookback_candles": 5,
-            "regime_ma_candles": 5,
-            "rebalance_every": 1,
-            "min_hold_candles": 0,
-            "top_n": 1,
-            # Keep threshold high so seeded BTC is the only qualifier.
-            "min_momentum_pct": 2.0,
-            "min_notional_24h": 0.0,
-            # keep test orders small if balance API is unavailable/fails
-            "capital_allocation": 50.0,
-            "max_single_alloc_pct": 100.0,
-        },
-    )
-    main.strategy_engine._strategies = [strat]
+    old_tracked = list(strategy_maliki_module.TRACKED_COINS)
+    strategy_maliki_module.TRACKED_COINS = ["BTCUSDT"]
+    try:
+        strat = StrategyMaliki(
+            main,
+            "strategy_maliki_Int",
+            setting={
+                "lookback_candles": 5,
+                "regime_ma_candles": 5,
+                "rebalance_every": 1,
+                "min_hold_candles": 0,
+                "top_n": 1,
+                # Keep threshold high so seeded BTC is the only qualifier.
+                "min_momentum_pct": 2.0,
+                "min_notional_24h": 0.0,
+                # keep test orders small if balance API is unavailable/fails
+                "capital_allocation": 50.0,
+                "max_single_alloc_pct": 100.0,
+            },
+        )
+        main.strategy_engine._strategies = [strat]
 
-    # Real market data path: seeded bar closes drive maliki's LIMIT buy (close * 1.001).
-    # `round(btc_px/1k)*1k` can round DOWN vs live ticker, leaving limit below market →
-    # BUY stays PENDING, no BTC settles, MARKET SELL then fails. Ceil keeps limit >= live.
-    btc_px = _live_price_from_gateway(main, "BTCUSDT")
-    # Step-friendly anchor so LIMIT (price * 1.001) lands on an integer and crosses the book.
-    btc_base = math.ceil(btc_px / 1000.0) * 1000.0
-    _seed_bars(
-        main.market_engine,
-        "BTCUSDT",
-        [btc_base * 0.96, btc_base * 0.97, btc_base * 0.98, btc_base * 0.99, btc_base * 1.00, btc_base * 1.00],
-        interval="5m",
-    )
+        # Real market data path: seeded bar closes drive maliki's LIMIT buy (close * 1.001).
+        # `round(btc_px/1k)*1k` can round DOWN vs live ticker, leaving limit below market →
+        # BUY stays PENDING, no BTC settles, MARKET SELL then fails. Ceil keeps limit >= live.
+        btc_px = _live_price_from_gateway(main, "BTCUSDT")
+        # Step-friendly anchor so LIMIT (price * 1.001) lands on an integer and crosses the book.
+        btc_base = math.ceil(btc_px / 1000.0) * 1000.0
+        _seed_bars(
+            main.market_engine,
+            "BTCUSDT",
+            [btc_base * 0.96, btc_base * 0.97, btc_base * 0.98, btc_base * 0.99, btc_base * 1.00, btc_base * 1.00],
+            interval="5m",
+        )
 
-    strat.on_init()
-    strat.on_start()
+        strat.on_init()
+        strat.on_start()
 
-    # 1) Open signal
-    strat.on_timer_logic()
-    _poll_until_finished(main, strat.strategy_name)
-    sent = _capture_strategy_orders(main, strat.strategy_name)
-    assert any(s == "BUY" for _, s, *_ in sent), f"No BUY captured. place_calls={place_calls}"
-    holding = main.strategy_engine.get_holding(strat.strategy_name)
-    assert any(getattr(p, "quantity", 0.0) > 0 for p in holding.positions.values())
+        # 1) Open signal
+        strat.on_timer_logic()
+        _poll_until_finished(main, strat.strategy_name)
+        sent = _capture_strategy_orders(main, strat.strategy_name)
+        assert any(s == "BUY" for _, s, *_ in sent), f"No BUY captured. place_calls={place_calls}"
+        holding = main.strategy_engine.get_holding(strat.strategy_name)
+        assert any(getattr(p, "quantity", 0.0) > 0 for p in holding.positions.values())
 
-    # 2) Force bearish regime via real bar update path.
-    _seed_bars(main.market_engine, "BTCUSDT", [btc_px * 0.80], interval="5m")
-    strat.on_timer_logic()
-    _poll_until_finished(main, strat.strategy_name)
-    sent = _capture_strategy_orders(main, strat.strategy_name)
-    assert any(s == "SELL" for _, s, *_ in sent), f"No SELL captured. place_calls={place_calls}"
-    holding = main.strategy_engine.get_holding(strat.strategy_name)
-    assert all(getattr(p, "quantity", 0.0) == 0.0 for p in holding.positions.values())
+        # 2) Force bearish regime via real bar update path.
+        _seed_bars(main.market_engine, "BTCUSDT", [btc_px * 0.80], interval="5m")
+        strat.on_timer_logic()
+        _poll_until_finished(main, strat.strategy_name)
+        sent = _capture_strategy_orders(main, strat.strategy_name)
+        assert any(s == "SELL" for _, s, *_ in sent), f"No SELL captured. place_calls={place_calls}"
+        holding = main.strategy_engine.get_holding(strat.strategy_name)
+        assert all(getattr(p, "quantity", 0.0) == 0.0 for p in holding.positions.values())
+    finally:
+        strategy_maliki_module.TRACKED_COINS = old_tracked
 
 
 def test_integration_strategy_jh_open_then_close_updates_holdings():

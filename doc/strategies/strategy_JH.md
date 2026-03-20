@@ -1,6 +1,6 @@
 ## `strategy_JH`
 
-Support-bounce strategy on **15m** bars (`StrategyJH` in `src/strategies/factory/strategy_JH.py`). Default universe: all discovered trading pairs at startup, overridable with `setting["pairs"]`.
+Support-bounce strategy on **15m** bars (`StrategyJH` in `src/strategies/factory/strategy_JH.py`). Default universe: keys of `PAIRS_CONFIG` (8 pairs), overridable with `setting["pairs"]`.
 
 ### Trading logic (tree)
 
@@ -38,7 +38,7 @@ TIMER TICK (every timer_trigger engine ticks; default 300)
       │  ├─ close_top_third: rng=H-L>0 and close >= L + rng*(2/3)
       │  ├─ close > sup_price
       │  ├─ close <= prev.open
-      │  └─ ATR: entry=(H+L)/2, stop=L-tick_size (from exchange price precision), risk=entry-stop, ATR>0 and risk < ATR
+      │  └─ ATR: entry=(H+L)/2, stop=L-mintick, risk=entry-stop, ATR>0 and risk < ATR
       ├─ Signal?
       │  ├─ hit_count==1 and all filters → signal
       │  ├─ hit_count==2 and all filters and NOT (cur.low > hit1_low) → signal
@@ -46,8 +46,8 @@ TIMER TICK (every timer_trigger engine ticks; default 300)
       └─ If signal and flat:
          ├─ cancel any pending orders for symbol
          ├─ size qty (alloc_per_pair, risk_pct, cap; round qty per SymbolData.amount_precision or 6dp)
-         ├─ round entry/stop/target prices to exchange `price_precision`
-         ├─ BUY MARKET (price is not used for the entry)
+         ├─ round entry/stop/target prices to PAIRS_CONFIG mintick
+         ├─ BUY LIMIT @ rounded entry
          ├─ limit_bar_idx = get_bar_count(sym, interval)
          └─ pending_stop / pending_target = rounded stop & target (→ active_* when BUY FILLS)
 
@@ -62,9 +62,9 @@ Same as the tree; numeric defaults: `pivot_len=5`, `rr=2.0`, `atr_len=14`, `fill
 
 ### What it does
 
-- **Universe**: all discovered trading pairs at startup (override with `pairs` list in `setting`).
+- **Universe**: default 8 pairs in `PAIRS_CONFIG` (override with `pairs` list in `setting`).
 - **Setup**: pivot-low **support** (`sup_price`), **H1/H2** support touches, strict bearish pattern (`prev3_bearish_strict`), bar-shape filters, **risk < ATR**.
-- **Entry**: **MARKET** on signal; stop/target are armed after entry fill from `pending_*`.
+- **Entry**: **LIMIT** at mid-bar entry, rounded to pair **mintick**; stale limit canceled after **`fill_bars + 1`** bars without fill (when flat + pending).
 - **Exit**: **MARKET** when **stop** or **target** (`rr` × risk) hit vs `last_price`; stop/target armed after entry **fill** from `pending_*`.
 
 ### Key parameters (defaults)
@@ -73,7 +73,7 @@ Same as the tree; numeric defaults: `pivot_len=5`, `rr=2.0`, `atr_len=14`, `fill
 |-----|---------|--------|
 | `timer_trigger` | `300` | Ticks between `on_timer_logic`. |
 | `interval` | `"15m"` | Bar interval for signals, ATR, pivot, timeout. |
-| `pairs` | (override discovered pairs) | If list provided, replaces default symbol universe. |
+| `pairs` | (use `PAIRS_CONFIG`) | If list provided, replaces default symbols. |
 | `pivot_len` | `5` | |
 | `rr` | `2.0` | Target distance vs risk segment. |
 | `fill_bars` | `1` | Limit timeout: `bars_since_limit >= fill_bars + 1`. |
@@ -81,7 +81,7 @@ Same as the tree; numeric defaults: `pivot_len=5`, `rr=2.0`, `atr_len=14`, `fill
 | `capital` | `20000.0` | Split → `_alloc_per_pair = capital / N_symbols`. |
 | `risk_pct` | `0.01` | `risk_amount = _alloc_per_pair * risk_pct` for sizing. |
 
-Tick size / rounding: derived from exchange `price_precision` for each symbol.
+**`PAIRS_CONFIG` minticks**: APTUSDT `0.01`, CRVUSDT `0.0001`, EIGENUSDT `0.001`, TAOUSDT `0.01`, UNIUSDT `0.001`, TRUMPUSDT `0.01`, BONKUSDT `1e-8`, SHIBUSDT `1e-8`.
 
 ### Lifecycle / integration
 

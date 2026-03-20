@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from src.strategies.factory import StrategyJH, StrategyMaliki, StratTestAlt
+from src.strategies.factory.strategy_maliki import TRACKED_COINS
 
 
 def _main_engine_mock():
@@ -16,13 +17,6 @@ def _main_engine_mock():
     main.gateway_engine = MagicMock()
     main.gateway_engine.trading_pairs = []
     main.market_engine = MagicMock()
-    # StrategyTemplate default universe comes from MarketEngine cache.
-    main.market_engine.get_cached_symbols.return_value = [
-        "APTUSDT",
-        "CRVUSDT",
-        "BTCUSDT",
-        "ETHUSDT",
-    ]
     main.strategy_engine = MagicMock()
     main.handle_intent = MagicMock(return_value="order-123")
     main.get_pending_orders_by_symbol = MagicMock(return_value={})
@@ -81,7 +75,7 @@ class TestStrategyJH:
         main = _main_engine_mock()
         strat = StrategyJH(main, "strategy_JH_Test", setting={})
         assert strat.strategy_name == "strategy_JH_Test"
-        # Default universe comes from MarketEngine cache via StrategyTemplate.
+        # Default universe comes from PAIRS_CONFIG inside the strategy.
         assert "APTUSDT" in strat.symbols
         assert strat.interval.binance == "15m"
         assert strat.pivot_len == 5
@@ -143,10 +137,10 @@ class TestStrategyMaliki:
         main = _main_engine_mock()
         strat = StrategyMaliki(main, "strategy_maliki_Test")
         reqs = strat.history_requirements()
-        btc_reqs = [r for r in reqs if r.get("symbol") == "BTCUSDT"]
-        assert btc_reqs, "Expected BTCUSDT history requests"
-        # Regime MA and momentum lookback both use 576 by default.
-        assert all(r["bars"] == 576 for r in btc_reqs)
+        assert len(reqs) >= len(TRACKED_COINS) + 1
+        btc_req = next(r for r in reqs if r.get("symbol") == "BTCUSDT")
+        # Regime MA now uses 48h (576 bars on 5m candles)
+        assert btc_req["bars"] == 576
 
     def test_has_enough_data_false_when_no_market(self):
         main = _main_engine_mock()

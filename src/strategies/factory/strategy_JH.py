@@ -5,7 +5,7 @@ Aligned to the provided reference bot:
 - Uses 15m bars directly from MarketEngine (no internal resampling).
 - Runs signal logic on 15m closes.
 - Monitors stop/target exits on every timer tick.
-- Trades all available discovered pairs by default.
+- Trades a fixed 8-pair universe by default.
 """
 
 from __future__ import annotations
@@ -14,10 +14,29 @@ from typing import TYPE_CHECKING, Any
 
 from src.strategies.template import StrategyTemplate
 from src.utilities.intents import INTENT_CANCEL_ORDER
-from src.utilities.object import CancelOrderRequest, TradingPair
+from src.utilities.object import CancelOrderRequest
 
 if TYPE_CHECKING:
     from src.engines.engine_main import MainEngine
+
+
+# Internal symbol universe (GatewayEngine expects BTCUSDT-style symbols).
+PAIRS_CONFIG: dict[str, dict[str, Any]] = {
+    "APTUSDT": {"mintick": 0.01},
+    "CRVUSDT": {"mintick": 0.0001},
+    "EIGENUSDT": {"mintick": 0.001},
+    "TAOUSDT": {"mintick": 0.01},
+    "UNIUSDT": {"mintick": 0.001},
+    "TRUMPUSDT": {"mintick": 0.01},
+    "BONKUSDT": {"mintick": 1e-8},
+    "SHIBUSDT": {"mintick": 1e-8},
+}
+
+
+def _round_price(value: float, mintick: float) -> float:
+    if mintick <= 0:
+        return value
+    return round(value / mintick) * mintick
 
 
 class StrategyJH(StrategyTemplate):
@@ -38,6 +57,13 @@ class StrategyJH(StrategyTemplate):
         s.setdefault("timer_trigger", 300)
         s.setdefault("interval", "15m")
 
+        pairs_override = s.get("pairs")
+        if isinstance(pairs_override, list) and pairs_override:
+            symbols = [str(x).strip().upper() for x in pairs_override if str(x).strip()]
+        else:
+            symbols = list(PAIRS_CONFIG.keys())
+        s["symbols"] = symbols
+
         super().__init__(main_engine, strategy_name, s)
 
         self.pivot_len: int = int(s.get("pivot_len", 5))
@@ -47,13 +73,7 @@ class StrategyJH(StrategyTemplate):
         self.capital: float = float(s.get("capital", 20_000.0))
         self.risk_pct: float = float(s.get("risk_pct", 0.01))
 
-        # Derive tick/rounding from exchange precision. If precision is missing,
-        # fall back to "no rounding" (still valid for comparisons).
-        self._price_precision: dict[str, int | None] = {}
-        getter = getattr(self._main, "get_trading_pair", None)
-        for sym in self.symbols:
-            tp = getter(sym) if callable(getter) else None
-            self._price_precision[sym] = int(getattr(tp, "price_precision", None)) if tp is not None else None
+        self._mintick: dict[str, float] = {sym: float(PAIRS_CONFIG.get(sym, {}).get("mintick", 0.01)) for sym in self.symbols}
         self._state: dict[str, dict[str, Any]] = {}
         self._alloc_per_pair: float = self.capital / max(1, len(self.symbols))
 
@@ -64,21 +84,6 @@ class StrategyJH(StrategyTemplate):
             f"alloc/pair=${self._alloc_per_pair:,.0f}",
             level="INFO",
         )
-
-    def _tick_size(self, sym: str) -> float:
-        """Approximate the exchange tick size from PricePrecision (as decimals)."""
-        px_dec = self._price_precision.get(sym)
-        if px_dec is None:
-            return 0.0
-        # PricePrecision means decimals; tick ~ 10^-decimals.
-        return float(10.0 ** (-int(px_dec)))
-
-    def _quantize_price(self, sym: str, value: float) -> float:
-        """Quantize to exchange price precision before using for stops/targets."""
-        px_dec = self._price_precision.get(sym)
-        if px_dec is None:
-            return value
-        return TradingPair.quantize_to_decimal_places(float(value), int(px_dec))
 
     def history_requirements(self) -> list[dict[str, object]]:
         ival = self.interval.binance
@@ -308,7 +313,7 @@ class StrategyJH(StrategyTemplate):
         ok_po = cur.close <= prev.open
 
         entry_price = (cur.high + cur.low) / 2.0
-        mintick = self._tick_size(sym)
+        mintick = float(self._mintick.get(sym, 0.01))
         stop_price = cur.low - mintick
         risk = entry_price - stop_price
 
@@ -384,11 +389,11 @@ class StrategyJH(StrategyTemplate):
         for oid in pending_map.get(sym, []):
             self._main.handle_intent(INTENT_CANCEL_ORDER, CancelOrderRequest(order_id=oid, symbol=sym))
 
-        rounded_entry = self._quantize_price(sym, entry_price)
-        rounded_stop = self._quantize_price(sym, stop_price)
-        rounded_target = self._quantize_price(sym, target_price)
+        rounded_entry = _round_price(entry_price, mintick)
+        rounded_stop = _round_price(stop_price, mintick)
+        rounded_target = _round_price(target_price, mintick)
 
-        oid = self.open_position(sym, qty, order_type="MARKET")
+        oid = self.open_position(sym, qty, price=rounded_entry, order_type="LIMIT")
         st["limit_bar_idx"] = int(market.get_bar_count(sym, interval))
         st["pending_order_id"] = str(oid or "")
         st["pending_stop"] = rounded_stop
@@ -397,7 +402,7 @@ class StrategyJH(StrategyTemplate):
 
         ht = "H1" if int(st["hit_count"]) == 1 else "H2"
         self.write_log(
-            f"[strategy_JH {sym}] SIGNAL | {ht} SUBMIT BUY MARKET | entry={rounded_entry:.6f} "
+            f"[strategy_JH {sym}] SIGNAL | {ht} SUBMIT BUY LIMIT | entry={rounded_entry:.6f} "
             f"stop={rounded_stop:.6f} target={rounded_target:.6f} qty={qty:.6f} risk_amt=${risk_amount:.2f}",
             level="INFO",
         )
