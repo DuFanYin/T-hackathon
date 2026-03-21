@@ -36,7 +36,8 @@ class GatewayEngine(BaseEngine):
     """Roostoo vendor adapter: send_order/cancel_order; on_timer() polls order status and refreshes account cache."""
 
     DEFAULT_MOCK_BASE_URL = "https://mock-api.roostoo.com"
-    DEFAULT_REAL_BASE_URL = "https://api.roostoo.com"
+    # Real mode uses the same host by default; keys decide account scope.
+    DEFAULT_REAL_BASE_URL = "https://mock-api.roostoo.com"
 
     def __init__(
         self,
@@ -56,8 +57,9 @@ class GatewayEngine(BaseEngine):
         self.env_mode: str = env_mode.strip().lower() if env_mode else "mock"
 
         # Base URL selection:
-        # - mock: https://mock-api.roostoo.com  (documented in third_party)
-        # - real: override via ROOSTOO_REAL_BASE_URL, else fallback to DEFAULT_REAL_BASE_URL
+        # - mock: override via ROOSTOO_MOCK_BASE_URL, else DEFAULT_MOCK_BASE_URL
+        # - real: override via ROOSTOO_REAL_BASE_URL, else DEFAULT_REAL_BASE_URL
+        # Note: by current project convention, real/mock share host and differ by API keys.
         if self.env_mode == "real":
             self.base_url = os.getenv("ROOSTOO_REAL_BASE_URL", self.DEFAULT_REAL_BASE_URL)
         else:
