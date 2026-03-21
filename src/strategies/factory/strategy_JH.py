@@ -70,7 +70,7 @@ class StrategyJH(StrategyTemplate):
         self.rr: float = float(s.get("rr", 2.0))
         self.atr_len: int = int(s.get("atr_len", 14))
         self.fill_bars: int = int(s.get("fill_bars", 1))
-        self.capital: float = float(s.get("capital", 20_000.0))
+        self.capital: float = float(s.get("capital", 500_000.0))
         self.risk_pct: float = float(s.get("risk_pct", 0.01))
 
         self._mintick: dict[str, float] = {sym: float(PAIRS_CONFIG.get(sym, {}).get("mintick", 0.01)) for sym in self.symbols}

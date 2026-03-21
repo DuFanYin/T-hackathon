@@ -9,7 +9,7 @@ Tuned parameters (per request):
   lookback=576 (48h on 5m bars), top_n=1, rebalance_every=288 (24h),
   trailing_stop=8%, min_hold=288 (24h), min_momentum=3.0%
 
-Default sizing fallback: capital_allocation=$20k when cached USD balance is unavailable.
+Default sizing fallback: capital_allocation=$500k when cached USD balance is unavailable.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ class StrategyMaliki(StrategyTemplate):
         self.min_momentum_pct: float = float(s.get("min_momentum_pct", 3.0))
         # Liquidity filter: approximate 24h notional (sum(volume*close) over last 288 bars).
         self.min_notional_24h: float = float(s.get("min_notional_24h", 1_000_000))
-        self.capital_allocation: float = float(s.get("capital_allocation", 20_000))
+        self.capital_allocation: float = float(s.get("capital_allocation", 500_000))
         # top_n=1 by default; allow full allocation.
         self.max_single_alloc_pct: float = float(s.get("max_single_alloc_pct", 100.0))
 
