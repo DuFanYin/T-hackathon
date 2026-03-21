@@ -21,8 +21,9 @@ import type {
   SystemStatus,
 } from './types';
 
-const API_BASE =
-  import.meta.env?.VITE_API_BASE?.toString?.() || 'http://localhost:8000';
+const API_BASE_RAW = import.meta.env?.VITE_API_BASE?.toString?.() || 'http://localhost:8000';
+// Avoid double slashes when VITE_API_BASE ends with `/` (e.g. `/api/`)
+const API_BASE = API_BASE_RAW.endsWith('/') ? API_BASE_RAW.slice(0, -1) : API_BASE_RAW;
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method || 'GET').toUpperCase();
