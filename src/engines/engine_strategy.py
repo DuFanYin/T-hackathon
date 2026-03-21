@@ -47,11 +47,20 @@ class StrategyEngine(BaseEngine):
         sym = str(symbol).strip().upper()
         if not sym:
             return
+        changes: list[str] = []
         if sym not in me.active_pairs:
             me.active_pairs.append(sym)
+            changes.append("active_pairs")
         if sym not in me.gateway_engine.trading_pairs:
             me.gateway_engine.trading_pairs.append(sym)
+            changes.append("gateway.trading_pairs")
         me.market_engine.set_symbols([sym])
+        if changes:
+            self.log(
+                f"[StrategyEngine] symbol subscribed: {sym} via {', '.join(changes)}",
+                level="INFO",
+                source="StrategyEngine",
+            )
 
     def add_strategy_by_name(self, strategy_name: str) -> "StrategyTemplate":
         """Create one strategy instance (no external symbol input)."""
@@ -62,8 +71,15 @@ class StrategyEngine(BaseEngine):
             raise ValueError(f"Unknown strategy name: {strategy_name}. Available: {list(AVAILABLE_STRATEGIES.keys())}")
         strategy = strategy_class(self.main_engine, strategy_name=strategy_name, setting={})
         self._strategies.append(strategy)
-        for sym in strategy.iter_symbols():
+        symbols = list(strategy.iter_symbols())
+        for sym in symbols:
             self._ensure_symbol_active(sym)
+        self.log(
+            f"[StrategyEngine] add_strategy_by_name: registered {strategy_name!r} "
+            f"symbols={symbols!r} total_instances={len(self._strategies)}",
+            level="INFO",
+            source="StrategyEngine",
+        )
         return strategy
 
     def get_strategy(self, strategy_name: str) -> "StrategyTemplate | None":
@@ -78,8 +94,18 @@ class StrategyEngine(BaseEngine):
         s = self.get_strategy(strategy_name)
         if s is None:
             raise ValueError(f"Strategy not found: {strategy_name}")
+        self.log(
+            f"[StrategyEngine] start_strategy: calling on_init/on_start for {strategy_name!r}",
+            level="INFO",
+            source="StrategyEngine",
+        )
         s.on_init()
         s.on_start()
+        self.log(
+            f"[StrategyEngine] start_strategy: started {strategy_name!r}",
+            level="INFO",
+            source="StrategyEngine",
+        )
 
     def stop_strategy(self, strategy_name: str) -> None:
         """
@@ -94,8 +120,25 @@ class StrategyEngine(BaseEngine):
         for pos in getattr(holding, "positions", {}).values():
             qty = float(getattr(pos, "quantity", 0.0) or 0.0)
             if qty != 0.0:
+                sym = getattr(pos, "symbol", "?")
+                self.log(
+                    f"[StrategyEngine] stop_strategy: blocked — open position {sym!r} qty={qty} "
+                    f"for {strategy_name!r}",
+                    level="WARN",
+                    source="StrategyEngine",
+                )
                 raise ValueError(f"Strategy has open positions; close positions before stop: {strategy_name}")
+        self.log(
+            f"[StrategyEngine] stop_strategy: calling on_stop for {strategy_name!r}",
+            level="INFO",
+            source="StrategyEngine",
+        )
         s.on_stop()
+        self.log(
+            f"[StrategyEngine] stop_strategy: stopped {strategy_name!r}",
+            level="INFO",
+            source="StrategyEngine",
+        )
 
     # ------------------------------------------------------------------
     # Holdings API (merged from PositionEngine)
@@ -115,6 +158,12 @@ class StrategyEngine(BaseEngine):
         last = float(self._order_last_filled.get(order_id, 0.0))
         delta = filled_qty - last
         if delta <= 0:
+            self.log(
+                f"[StrategyHoldings] fill skip (no new delta): strategy={strategy_name} "
+                f"symbol={data.symbol} order_id={order_id} filled_qty={filled_qty:.8f} last_applied={last:.8f}",
+                level="DEBUG",
+                source="StrategyEngine",
+            )
             return
         self._order_last_filled[order_id] = filled_qty
 
@@ -125,6 +174,12 @@ class StrategyEngine(BaseEngine):
         pos = holding.positions[symbol]
 
         if pos.quantity < 0:
+            self.log(
+                f"[StrategyHoldings] invariant failed: negative qty strategy={strategy_name} "
+                f"symbol={symbol} qty={pos.quantity}",
+                level="ERROR",
+                source="StrategyEngine",
+            )
             raise ValueError(f"Position quantity must be >= 0 (no short allowed): {symbol} = {pos.quantity}")
 
         side = (data.side or "").upper()
@@ -149,6 +204,12 @@ class StrategyEngine(BaseEngine):
 
         if side == "SELL":
             if delta > pos.quantity:
+                self.log(
+                    f"[StrategyHoldings] SELL over position: strategy={strategy_name} symbol={symbol} "
+                    f"order_id={order_id} delta={delta:.8f} qty={pos.quantity:.8f}",
+                    level="ERROR",
+                    source="StrategyEngine",
+                )
                 raise ValueError(f"SELL {delta} would make position negative: {symbol} quantity={pos.quantity}")
             pos.quantity -= delta
             if pos.quantity == 0:
@@ -164,6 +225,12 @@ class StrategyEngine(BaseEngine):
             )
             return
 
+        self.log(
+            f"[StrategyHoldings] unknown side: strategy={strategy_name} symbol={symbol} "
+            f"order_id={order_id} side={side!r}",
+            level="ERROR",
+            source="StrategyEngine",
+        )
         raise ValueError(f"Unknown order side: {side}")
 
     def process_timer_event(self) -> None:
@@ -199,7 +266,24 @@ class StrategyEngine(BaseEngine):
     def on_order(self, event) -> None:
         data = getattr(event, "data", event)
         if isinstance(data, OrderData):
+            oid = str(getattr(data, "order_id", "") or "")
+            st = getattr(data, "strategy_name", None) or "default"
+            sym = getattr(data, "symbol", "")
+            self.log(
+                f"[StrategyEngine] on_order: OrderData order_id={oid!r} strategy={st!r} symbol={sym!r} "
+                f"side={getattr(data, 'side', '')!r} status={getattr(data, 'status', '')!r} "
+                f"filled_qty={float(getattr(data, 'filled_quantity', 0.0) or 0.0):.8f}",
+                level="DEBUG",
+                source="StrategyEngine",
+            )
             self._apply_order_fill_to_holdings(data)
+        else:
+            self.log(
+                f"[StrategyEngine] on_order: non-OrderData event ({type(event).__name__}); "
+                "forwarding to strategies only",
+                level="DEBUG",
+                source="StrategyEngine",
+            )
         for s in self._strategies:
             s.on_order(event)
 

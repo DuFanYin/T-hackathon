@@ -45,6 +45,11 @@ export type ClosePositionsResponse = { ok: boolean; name: string };
 export type CloseAllPositionsResponse = { ok: boolean; closed: string[]; errors: Record<string, string> };
 
 export type LogsTailResponse = { lines: string[] };
+
+/** GET /strategies/health — per-strategy JSON from StrategyTemplate.health_snapshot() */
+export type StrategiesHealthResponse = {
+  strategies: Record<string, Record<string, unknown>>;
+};
 export type SystemStatus = { running: boolean; mode: 'mock' | 'real' | null };
 
 export type AccountBalanceResponse = { balance: unknown };

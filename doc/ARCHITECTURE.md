@@ -205,6 +205,7 @@ Control API exposes:
 - **Strategies**
   - `GET /strategies/available`
   - `GET /strategies/running`
+  - `GET /strategies/health` — in-memory `health_snapshot()` per strategy (Maliki regime/ticks/momentum/JH pairs); includes `position_reconciliation` (issues when internal state vs holdings/pending orders disagree)
   - `POST /strategies/start`
   - `POST /strategies/stop`
   - (removed) `POST /strategies/add`
@@ -469,6 +470,7 @@ The FastAPI app is built by `src/control/api.py:create_app(engine_manager)` and 
 - **Strategies**
   - `GET /strategies/available`
   - `GET /strategies/running`
+  - `GET /strategies/health` — in-memory `health_snapshot()` per strategy
   - (removed) `POST /strategies/add` — strategies are created on system init
   - `POST /strategies/start`
   - `POST /strategies/stop`

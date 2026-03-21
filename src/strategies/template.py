@@ -193,6 +193,26 @@ class StrategyTemplate:
         """Override: run every timer_trigger ticks; use get_symbol() for prices."""
         pass
 
+    def health_snapshot(self) -> dict[str, Any]:
+        """
+        JSON-serializable status for control UI (GET /strategies/health).
+
+        Strategies with richer state override this and set ``kind`` to a strategy-specific tag.
+        """
+        trig = int(self._timer_trigger)
+        subtick = int(self._timer_cnt)
+        return {
+            "strategy_name": self.strategy_name,
+            "kind": "generic",
+            "inited": self.inited,
+            "started": self.started,
+            "error": self.error,
+            "error_msg": str(self._error_msg or ""),
+            "timer_trigger": trig,
+            "engine_subtick": subtick,
+            "engine_subticks_until_fire": max(0, trig - subtick) if self.started else 0,
+        }
+
     # ---------- helpers ----------
 
     def write_log(self, msg: str, level: str = "INFO") -> None:

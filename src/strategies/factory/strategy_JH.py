@@ -133,6 +133,133 @@ class StrategyJH(StrategyTemplate):
         self.write_log("Stopping — clearing all positions", level="INFO")
         self.clear_all_positions()
 
+    def _position_reconciliation(self) -> dict[str, Any]:
+        """
+        Compare per-symbol state vs holdings + pending orders.
+
+        - active_exits_but_flat_no_pending: active_stop/target but qty=0 and no pending (inconsistent).
+        - holding_without_active_exits: qty>0 but no active or pending exit plan.
+        - pending_plan_but_flat_no_order: pending_stop/target in memory but flat and no engine pending.
+        """
+        issues: list[dict[str, Any]] = []
+        notes: list[dict[str, Any]] = []
+        se = getattr(self._main, "strategy_engine", None)
+        if se is None:
+            return {"ok": True, "issues": [], "notes": [], "skipped": "no strategy_engine"}
+
+        holding = se.get_holding(self.strategy_name)
+        pending_map = self.get_pending_orders()
+
+        for sym in self.symbols:
+            st = self._state.get(sym) or {}
+            qty = 0.0
+            if holding is not None:
+                pos = holding.positions.get(sym)
+                if pos is not None:
+                    qty = float(getattr(pos, "quantity", 0.0) or 0.0)
+
+            pend = list(pending_map.get(sym, []) or [])
+            pending_oid = str(st.get("pending_order_id") or "").strip()
+            has_engine_pending = bool(pend) or bool(pending_oid)
+
+            a_stop = st.get("active_stop")
+            a_tgt = st.get("active_target")
+            p_stop = st.get("pending_stop")
+            p_tgt = st.get("pending_target")
+
+            if qty <= 0 and has_engine_pending:
+                notes.append(
+                    {
+                        "type": "awaiting_fill_or_pending",
+                        "symbol": sym,
+                        "pending_order_ids": pend if pend else ([pending_oid] if pending_oid else []),
+                        "detail": "No position qty but order activity on symbol",
+                    }
+                )
+
+            if a_stop is not None and a_tgt is not None and qty <= 0 and not has_engine_pending:
+                issues.append(
+                    {
+                        "type": "active_exits_but_flat_no_pending",
+                        "symbol": sym,
+                        "detail": "active_stop/target set but flat and no pending — state/holdings desync?",
+                    }
+                )
+
+            if (
+                qty <= 0
+                and not has_engine_pending
+                and p_stop is not None
+                and p_tgt is not None
+                and not pending_oid
+            ):
+                issues.append(
+                    {
+                        "type": "pending_plan_but_flat_no_order",
+                        "symbol": sym,
+                        "detail": "pending_stop/target in state but flat and no pending_order_id / engine pending",
+                    }
+                )
+
+            if qty > 0 and (a_stop is None or a_tgt is None) and (p_stop is None or p_tgt is None):
+                issues.append(
+                    {
+                        "type": "holding_without_exit_plan",
+                        "symbol": sym,
+                        "quantity": qty,
+                        "detail": "Position qty>0 but no active or pending stop/target",
+                    }
+                )
+
+        return {"ok": len(issues) == 0, "issues": issues, "notes": notes}
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Per-pair scanner state + live prices (no log parsing)."""
+        h = super().health_snapshot()
+        h["kind"] = "jh"
+        ival = self.interval.binance
+        se = getattr(self._main, "strategy_engine", None)
+        holding = se.get_holding(self.strategy_name) if se else None
+        market = getattr(self._main, "market_engine", None)
+        pairs: list[dict[str, Any]] = []
+        for sym in self.symbols:
+            st = self._state.get(sym) or {}
+            qty = 0.0
+            mid = 0.0
+            if holding is not None:
+                pos = holding.positions.get(sym)
+                if pos is not None:
+                    qty = float(getattr(pos, "quantity", 0.0) or 0.0)
+                    mid = float(getattr(pos, "mid_price", 0.0) or 0.0)
+            last = 0.0
+            if market is not None:
+                sd = market.get_symbol(sym)
+                if sd is not None:
+                    last = float(getattr(sd, "last_price", 0.0) or 0.0)
+            sup = st.get("sup_price")
+            pairs.append(
+                {
+                    "symbol": sym,
+                    "sup_price": float(sup) if sup is not None else None,
+                    "hit_count": int(st.get("hit_count", 0) or 0),
+                    "active_stop": float(st["active_stop"]) if st.get("active_stop") is not None else None,
+                    "active_target": float(st["active_target"]) if st.get("active_target") is not None else None,
+                    "pending_order_id": str(st.get("pending_order_id") or ""),
+                    "has_position": qty > 0,
+                    "quantity": qty,
+                    "entry_price": float(st.get("entry_price", 0.0) or 0.0),
+                    "last_price": last,
+                    "mid_price": mid,
+                }
+            )
+        h["pairs"] = pairs
+        h["interval"] = str(ival)
+        h["pivot_len"] = int(self.pivot_len)
+        h["atr_len"] = int(self.atr_len)
+        h["rr"] = float(self.rr)
+        h["position_reconciliation"] = self._position_reconciliation()
+        return h
+
     def on_timer_logic(self) -> None:
         market = getattr(self._main, "market_engine", None)
         if not market:

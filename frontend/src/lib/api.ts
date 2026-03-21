@@ -11,6 +11,7 @@ import type {
   OrdersResponse,
   PositionsResponse,
   RunningStrategiesResponse,
+  StrategiesHealthResponse,
   StartStrategyPayload,
   StartStrategyResponse,
   StartStrategyByNamePayload,
@@ -53,6 +54,7 @@ export const api = {
   systemStop: () => http<SystemStatus>('/system/stop', { method: 'POST' }),
   availableStrategies: () => http<AvailableStrategiesResponse>('/strategies/available'),
   runningStrategies: () => http<RunningStrategiesResponse>('/strategies/running'),
+  strategiesHealth: () => http<StrategiesHealthResponse>('/strategies/health'),
   startStrategy: (payload: StartStrategyPayload) =>
     http<StartStrategyResponse>('/strategies/start', {
       method: 'POST',

@@ -198,6 +198,154 @@ class StrategyMaliki(StrategyTemplate):
         self.write_log("[strategy_maliki] STOP | closing all positions", level="INFO")
         self.clear_all_positions()
 
+    def _position_reconciliation(self) -> dict[str, Any]:
+        """
+        Detect internal/risk metadata vs engine holdings mismatches.
+
+        - risk_state_but_flat_no_pending: trail metadata exists but qty=0 and no open orders
+          (possible missed fill, rejected order, or desync).
+        - holding_without_risk_state: engine has qty>0 but no _risk_state for that coin.
+        """
+        issues: list[dict[str, Any]] = []
+        notes: list[dict[str, Any]] = []
+        se = getattr(self._main, "strategy_engine", None)
+        if se is None:
+            return {"ok": True, "issues": [], "notes": [], "skipped": "no strategy_engine"}
+
+        holding = se.get_holding(self.strategy_name)
+        pending_map = self.get_pending_orders()
+        held_eng = self._engine_positions()
+
+        for coin in list(self._risk_state.keys()):
+            sym = f"{coin}USDT" if not str(coin).upper().endswith("USDT") else str(coin).upper()
+            qty = float(held_eng.get(coin, 0.0) or 0.0)
+            pend = list(pending_map.get(sym, []) or [])
+            if qty > 0:
+                continue
+            if pend:
+                notes.append(
+                    {
+                        "type": "awaiting_fill_or_pending",
+                        "coin": coin,
+                        "symbol": sym,
+                        "pending_order_ids": pend,
+                        "detail": "Flat qty but open order(s) on symbol — likely entry/exit in flight",
+                    }
+                )
+                continue
+            issues.append(
+                {
+                    "type": "risk_state_but_flat_no_pending",
+                    "coin": coin,
+                    "symbol": sym,
+                    "detail": "_risk_state present but holdings qty=0 and no pending orders",
+                }
+            )
+
+        for sym, pos in getattr(holding, "positions", {}).items():
+            q = float(getattr(pos, "quantity", 0.0) or 0.0)
+            if q <= 0:
+                continue
+            coin = self._symbol_to_coin(sym)
+            if coin not in self._risk_state:
+                issues.append(
+                    {
+                        "type": "holding_without_risk_state",
+                        "coin": coin,
+                        "symbol": str(sym),
+                        "quantity": q,
+                        "detail": "Engine holdings show position but strategy has no _risk_state",
+                    }
+                )
+
+        return {"ok": len(issues) == 0, "issues": issues, "notes": notes}
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Live regime, rebalance step, momentum ranking, and trail metadata (no log parsing)."""
+        h = super().health_snapshot()
+        h["kind"] = "maliki"
+        me = getattr(self._main, "market_engine", None)
+        ival = self.interval.binance
+        btc_bars = int(me.get_bar_count("BTCUSDT", ival)) if me else 0
+        warmup_ok = bool(self._has_enough_data())
+        snap = self._regime_snapshot()
+        if snap is None:
+            h["regime"] = "UNKNOWN"
+            h["regime_bullish"] = False
+            h["btc_last"] = 0.0
+            h["btc_ma"] = 0.0
+            h["spread_pct"] = 0.0
+        else:
+            bull, bl, bm = snap
+            h["regime"] = "BULL" if bull else "BEAR"
+            h["regime_bullish"] = bool(bull)
+            h["btc_last"] = float(bl)
+            h["btc_ma"] = float(bm)
+            h["spread_pct"] = float((bl - bm) / bm * 100.0) if bm else 0.0
+
+        h["btc_bar_count"] = btc_bars
+        h["regime_ma_candles"] = int(self.regime_ma_candles)
+        h["warmup_ok"] = warmup_ok
+
+        tc = int(self._tick_count)
+        te = int(self.rebalance_every)
+        h["strategy_step_tick"] = tc
+        h["rebalance_every"] = te
+        mod = tc % te if te else 0
+        h["ticks_until_rebalance"] = (te - mod) if mod != 0 else te
+
+        rankings = self._get_momentum_rankings()
+        h["momentum_top"] = [
+            {
+                "coin": str(r["coin"]),
+                "momentum_pct": round(float(r["momentum_pct"]), 6),
+                "notional_24h": round(float(r.get("notional_24h", 0.0)), 2),
+            }
+            for r in rankings[:15]
+        ]
+        h["momentum_candidates"] = len(rankings)
+        h["min_momentum_pct"] = float(self.min_momentum_pct)
+
+        prices = self._get_current_prices()
+        se = getattr(self._main, "strategy_engine", None)
+        holding = se.get_holding(self.strategy_name) if se else None
+        trails: list[dict[str, Any]] = []
+        for coin, st in self._risk_state.items():
+            price = float(prices.get(coin, 0.0) or 0.0)
+            peak = float(st.get("peak_price", 0.0) or 0.0)
+            entry_tick = int(st.get("entry_tick", 0) or 0)
+            entry_price = float(st.get("entry_price", 0.0) or 0.0)
+            ticks_held = tc - entry_tick
+            dd = (peak - price) / peak * 100.0 if peak > 0 and price > 0 else 0.0
+            sym = f"{coin}USDT" if not str(coin).upper().endswith("USDT") else str(coin).upper()
+            pos = holding.positions.get(sym) if holding is not None else None
+            qty = float(getattr(pos, "quantity", 0.0) or 0.0) if pos is not None else 0.0
+            mid = float(getattr(pos, "mid_price", 0.0) or 0.0) if pos is not None else 0.0
+            trails.append(
+                {
+                    "coin": coin,
+                    "symbol": sym,
+                    "quantity": qty,
+                    "mid_price": mid,
+                    "peak_price": peak,
+                    "entry_price": entry_price,
+                    "current_price": price,
+                    "drawdown_from_peak_pct": round(dd, 4),
+                    "ticks_held": ticks_held,
+                    "min_hold_candles": int(self.min_hold_candles),
+                    "trailing_stop_pct": float(self.trailing_stop_pct),
+                }
+            )
+        h["trail_state"] = trails
+        h["held_coins"] = sorted(self._engine_positions().keys())
+        h["trailing_stop_pct"] = float(self.trailing_stop_pct)
+        h["min_hold_candles"] = int(self.min_hold_candles)
+        h["lookback_candles"] = int(self.lookback_candles)
+        h["interval"] = str(ival)
+        h["top_n"] = int(self.top_n)
+        h["position_reconciliation"] = self._position_reconciliation()
+        return h
+
     # ──────────────────────────────────────────
     # Main timer logic (each call ≈ every 5m with default timer_trigger=300 and EventEngine interval=1s)
     # ──────────────────────────────────────────

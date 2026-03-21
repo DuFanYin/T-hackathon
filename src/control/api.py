@@ -164,6 +164,32 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
             )
         return {"running": items}
 
+    @app.get("/strategies/health")
+    def strategies_health():
+        """
+        Live strategy state for the operator UI (regime, timers, rankings, JH pair state).
+
+        Sourced from in-memory strategy objects — does not parse log files.
+        """
+        main_engine = _eng()
+        strategies: dict[str, Any] = {}
+        for s in getattr(main_engine.strategy_engine, "_strategies", []):
+            name = str(getattr(s, "strategy_name", "") or "").strip()
+            if not name:
+                continue
+            if not isinstance(s, StrategyTemplate):
+                continue
+            try:
+                strategies[name] = s.health_snapshot()
+            except Exception as e:
+                strategies[name] = {
+                    "strategy_name": name,
+                    "kind": "error",
+                    "error": True,
+                    "error_msg": str(e),
+                }
+        return {"strategies": strategies}
+
     @app.post("/strategies/start")
     def strategy_start(payload: dict[str, Any]):
         main_engine = _eng()
