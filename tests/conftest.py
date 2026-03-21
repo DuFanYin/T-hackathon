@@ -16,5 +16,4 @@ def mock_main_engine():
     main.market_engine = MagicMock()
     main.gateway_engine = MagicMock()
     main.strategy_engine = MagicMock()
-    main.risk_engine = MagicMock()
     return main

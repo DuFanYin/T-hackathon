@@ -37,7 +37,6 @@ def _make_main_with_real_gateway():
     main.market_engine = MarketEngine(main_engine=None)
     main.put_event = MagicMock()
     main.strategy_engine = StrategyEngine(main_engine=main)
-    main.risk_engine = MagicMock()
     main.event_engine = EventEngine(main_engine=main)
     main.gateway_engine = GatewayEngine(main_engine=main, env_mode="mock")
     main.gateway_engine.trading_pairs = []

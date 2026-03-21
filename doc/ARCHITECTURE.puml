@@ -55,7 +55,6 @@ frame "Backend (one Python process)" as backend {
     rectangle "GatewayEngine\n(Roostoo REST + order polling + account cache)" as gateway
     rectangle "MarketEngine\n(Binance klines + indicators)" as market
     rectangle "StrategyEngine\n(strategies + holdings/PnL)" as strat
-    rectangle "RiskEngine\n(currently stub)" as risk
   }
 
   rectangle "OrderStore" as order_store
@@ -84,7 +83,6 @@ main --> event : start/stop\n(route events + timer ticks)
 event --> market : on_timer()
 event --> gateway : on_timer()
 event --> strat : process_timer_event(); on_timer()
-event --> risk : on_timer()
 
 main --> log_store : write_log()\n(tail + fanout)
 log_store --> fastapi : stream log lines\n(SSE subscribers)

@@ -243,20 +243,6 @@ class LogData:
     ts: Optional[datetime] = None
 
 
-# ---------------- RISK ALERT ----------------
-
-
-@dataclass
-class RiskAlertData:
-    """Payload for `EVENT_RISK_ALERT`."""
-
-    msg: str
-    severity: str = "WARN"  # e.g. "WARN", "CRITICAL"
-    code: Optional[str] = None  # machine‑readable code/id
-    source: Optional[str] = None
-    ts: Optional[datetime] = None
-
-
 # ---------------- TIMER ----------------
 
 
@@ -277,7 +263,6 @@ __all__ = [
     "PositionData",
     "StrategyHolding",
     "LogData",
-    "RiskAlertData",
     "TimerData",
 ]
 

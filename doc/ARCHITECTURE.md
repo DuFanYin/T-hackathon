@@ -6,7 +6,7 @@ This document describes the **current** architecture implemented in this reposit
 
 - `api_server.py`: starts FastAPI (Uvicorn) and owns engine lifetime via `EngineManager`.
 - `src/control/`: HTTP API (`api.py`), engine lifecycle (`engine_manager.py`), persistence helpers (`order_store.py`, `log_store.py`).
-- `src/engines/`: composition root (`engine_main.py`) + engines (`engine_event.py`, `engine_gateway.py`, `engine_market.py`, `engine_strategy.py`, `engine_risk.py`).
+- `src/engines/`: composition root (`engine_main.py`) + engines (`engine_event.py`, `engine_gateway.py`, `engine_market.py`, `engine_strategy.py`).
 - `src/strategies/`: strategy base + implementations (`template.py`, `factory/*.py`).
 - `src/utilities/`: shared models/constants (`object.py`, `events.py`, `intents.py`, etc.).
 - `frontend/`: React + TypeScript + Vite dashboard (`frontend/src/`).
@@ -51,10 +51,10 @@ High-level runtime diagram:
                                      └──────┬──────┘  └──────┬───────┘ └───────┬───────┘
                                             │                │                 │ poll+persist
                                             │                │                 │
-                                     ┌──────▼─────────┐  ┌───▼─────────┐  ┌────▼──────────────────┐
-                                     │ StrategyEngine │  │ RiskEngine  │  │ OrderStore (SQLite)   │
-                                     │ holdings+PnL   │  │ account PnL │  │ data/orders/orders.db │
-                                     └────────────────┘  └─────────────┘  └───────────────────────┘
+                                     ┌──────▼─────────┐  ┌────▼──────────────────┐
+                                     │ StrategyEngine │  │ OrderStore (SQLite)   │
+                                     │ holdings+PnL   │  │ data/orders/orders.db │
+                                     └────────────────┘  └───────────────────────┘
 ```
 
 ## Process model and entrypoint
@@ -88,7 +88,7 @@ The UI does **not** open a streaming connection; it polls logs using `GET /logs/
 - `MarketEngine`: Binance klines -> bars/symbol snapshots + indicators
 - `GatewayEngine`: Roostoo adapter + order polling + cached account snapshots
 - `StrategyEngine`: strategy registry + holdings + mark-to-market PnL
-- `RiskEngine`: provides the `GET /account/pnl` snapshot
+- `MainEngine.get_account_pnl()`: equity / PnL snapshot for `GET /account/pnl` (vs fixed baseline)
 - `OrderStore`: SQLite persistence for FILLED orders
 - `LogStore`: in-memory log tail + disk rotation writer
 
@@ -123,7 +123,6 @@ On each `EVENT_TIMER` tick (`src/engines/engine_event.py`):
 2. `GatewayEngine.on_timer()` — poll tracked orders; refresh cached account snapshot on cadence
 3. `StrategyEngine.process_timer_event()` — recompute holdings/PnL from latest prices
 4. `StrategyEngine.on_timer()` — run each started strategy’s timer logic
-5. `RiskEngine.on_timer()` — update account PnL snapshot
 
 ### Engines and responsibilities
 
@@ -168,10 +167,6 @@ Credentials are sourced from `.env` (see `.env.sample`).
   - `current_value` (quantity × mid_price)
   - `unrealized_pnl`, `realized_pnl`, `pnl`
 - enforces “must be FLAT” before stopping a strategy
-
-#### `RiskEngine` (account PnL snapshot)
-
-`src/engines/engine_risk.py:RiskEngine` provides the snapshot returned by `GET /account/pnl`.
 
 ## State and persistence
 
@@ -270,7 +265,7 @@ This document describes the *actual* architecture implemented in this repository
 
 - `api_server.py`: starts the FastAPI control plane (Uvicorn) and owns engine lifetime via `EngineManager`.
 - `src/control/`: HTTP API (`api.py`), engine lifecycle wrapper (`engine_manager.py`), persistence helpers (`order_store.py`, `log_store.py`).
-- `src/engines/`: composition root (`engine_main.py`) + core engines (`engine_event.py`, `engine_gateway.py`, `engine_market.py`, `engine_strategy.py`, `engine_risk.py`).
+- `src/engines/`: composition root (`engine_main.py`) + core engines (`engine_event.py`, `engine_gateway.py`, `engine_market.py`, `engine_strategy.py`).
 - `src/strategies/`: strategy base + concrete strategies (`template.py`, `factory/*.py`).
 - `src/utilities/`: internal data models and shared constants (`object.py`, `events.py`, `intents.py`, etc.).
 - `frontend/`: React + TypeScript + Vite dashboard (`frontend/src/`).
@@ -317,10 +312,10 @@ High-level runtime diagram:
                                      └──────┬──────┘  └──────┬───────┘ └───────┬───────┘
                                             │                │                 │ poll+persist
                                             │                │                 │
-                                     ┌──────▼─────────┐  ┌───▼─────────┐  ┌────▼──────────────────┐
-                                     │ StrategyEngine │  │ RiskEngine  │  │ OrderStore (SQLite)   │
-                                     │ strategies+PnL │  │ (stub)      │  │ data/orders/orders.db │
-                                     └──────┬─────────┘  └─────────────┘  └───────────────────────┘
+                                     ┌──────▼─────────┐  ┌────▼──────────────────┐
+                                     │ StrategyEngine │  │ OrderStore (SQLite)   │
+                                     │ strategies+PnL │  │ data/orders/orders.db │
+                                     └──────┬─────────┘  └───────────────────────┘
                                             │
                                             │ logs (tail + fanout)
                                       ┌─────▼─────────────────────────────┐
@@ -359,7 +354,7 @@ There is **one Python process**. The engine runs **in-process** and uses threads
 - `MarketEngine`: price/bars + indicators; periodically fetches Binance klines
 - `GatewayEngine`: exchange adapter for Roostoo (mock/real modes), order polling, cached account snapshots
 - `StrategyEngine`: strategy registry, order -> holdings updates, mark-to-market valuation, per-strategy timers
-- `RiskEngine`: present as an engine boundary, currently a placeholder
+- `MainEngine.get_account_pnl()`: account equity / PnL % for the dashboard (`GET /account/pnl`)
 - `OrderStore`: SQLite persistence for orders at `data/orders/orders.db`
 - `LogStore`: bounded in-memory tail + subscriber fanout; disk log rotation to `data/logs/system.log`
 
@@ -385,7 +380,6 @@ This keeps the HTTP service “always on” while making the engine itself expli
 2. `GatewayEngine.on_timer()` (poll orders; refresh cached account snapshot periodically)
 3. `StrategyEngine.process_timer_event()` (update holdings mark-to-market)
 4. `StrategyEngine.on_timer()` (strategy timers)
-5. `RiskEngine.on_timer()` (currently stub)
 
 In addition to timer ticks, it routes *intents* (e.g., order placement) using the intent constants in `src/utilities/intents.py`.
 
@@ -422,10 +416,6 @@ Credentials are sourced from `.env` (see `.env.sample`), primarily via:
 - mark-to-market PnL valuation using latest market data
 
 Available strategies are currently defined in a hard-coded mapping (`AVAILABLE_STRATEGIES`) and instantiated by name.
-
-#### `RiskEngine` (risk boundary)
-
-`src/engines/engine_risk.py:RiskEngine` is present as an architectural boundary but currently contains placeholder logic (`pass` on order/timer hooks). The intended integration point is that it observes orders/ticks and can emit risk alerts without owning execution.
 
 ### State and persistence surfaces
 
@@ -526,6 +516,6 @@ Data access is split deliberately:
 These are current design realities (not aspirations):
 
 - There is **no `/symbols` endpoint** in the control API (despite some older documentation references).
-- `RiskEngine` is an architectural placeholder; risk logic is not yet implemented.
+- Account-level PnL in the UI uses `MainEngine.get_account_pnl()` (fixed baseline vs cached wallet); there is no separate risk/drawdown engine.
 - Some older scripts/tests may be stale relative to the current strategy creation APIs.
 

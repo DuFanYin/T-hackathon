@@ -13,7 +13,7 @@ from typing import Any, TYPE_CHECKING
 from src.control.log_store import format_engine_log_timestamp
 from src.engines.engine_gateway import GatewayEngine
 from src.utilities.base_engine import BaseEngine
-from src.utilities.events import EVENT_BAR, EVENT_LOG, EVENT_ORDER, EVENT_RISK_ALERT, EVENT_TIMER
+from src.utilities.events import EVENT_BAR, EVENT_LOG, EVENT_ORDER, EVENT_TIMER
 from src.utilities.intents import (
     INTENT_CANCEL_ORDER,
     INTENT_LOG,
@@ -75,8 +75,6 @@ class EventEngine(BaseEngine):
             self._handle_order(event)
         elif etype == EVENT_LOG:
             self._handle_log(event)
-        elif etype == EVENT_RISK_ALERT:
-            self._handle_risk_alert(event)
         elif etype == EVENT_TIMER:
             self._handle_timer(event)
 
@@ -136,7 +134,6 @@ class EventEngine(BaseEngine):
         me = self.main_engine
         assert me is not None
         me.strategy_engine.on_order(event)
-        me.risk_engine.on_order(event)
 
     def _handle_log(self, event: Event) -> None:
         data = event.data
@@ -151,10 +148,6 @@ class EventEngine(BaseEngine):
             pass
         print(f"{format_engine_log_timestamp()} [{level}] {source} | {msg}")
 
-    def _handle_risk_alert(self, event: Event) -> None:
-        msg = getattr(event.data, "msg", None) or str(event.data)
-        print(f"[RISK] {msg}")
-
     def _handle_timer(self, event: Event) -> None:
         me = self.main_engine
         assert me is not None
@@ -166,7 +159,6 @@ class EventEngine(BaseEngine):
         me.gateway_engine.on_timer()
         me.strategy_engine.process_timer_event()
         me.strategy_engine.on_timer()
-        me.risk_engine.on_timer()
 
     # ---------------- intent routing ----------------
 

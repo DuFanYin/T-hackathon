@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, type FC } from 'react';
+import { useCallback, useEffect, useRef, useState, type FC } from 'react';
 import { api } from '../lib/api';
 import type { Holding, RunningStrategy } from '../lib/types';
 
@@ -14,6 +14,8 @@ interface RegimeState {
   btcPrice: number;
   btcMa: number;
   spreadPct: number;
+  /** Log line was `regime=UNKNOWN (insufficient BTC bars...)` — not the same as BEAR. */
+  insufficientData?: boolean;
 }
 
 interface MomentumEntry {
@@ -54,6 +56,16 @@ function parseRegime(lines: string[]): RegimeState | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
     if (!l.includes('REBALANCE') || !l.includes('regime=')) continue;
+    // Warmup: backend logs this until enough BTC bars exist for the MA — do not skip.
+    if (l.includes('regime=UNKNOWN')) {
+      return {
+        bullish: false,
+        btcPrice: 0,
+        btcMa: 0,
+        spreadPct: 0,
+        insufficientData: true,
+      };
+    }
     const bull = l.includes("regime='BULL'") || l.includes('regime=BULL');
     const bear = l.includes("regime='BEAR'") || l.includes('regime=BEAR');
     if (!bull && !bear) continue;
@@ -68,6 +80,21 @@ function parseRegime(lines: string[]): RegimeState | null {
       btcMa: maM ? parseFloat(maM[1]) : 0,
       spreadPct: spreadM && maM ? (parseFloat(spreadM[1]) / parseFloat(maM[1])) * 100 : 0,
     };
+  }
+  // No REBALANCE line yet (common before first rebalance step); infer warming up from TIMER.
+  for (let j = lines.length - 1; j >= 0; j--) {
+    const t = lines[j];
+    if (!t.includes('[strategy_maliki] TIMER')) continue;
+    if (t.includes('warmup_ok=False')) {
+      return {
+        bullish: false,
+        btcPrice: 0,
+        btcMa: 0,
+        spreadPct: 0,
+        insufficientData: true,
+      };
+    }
+    break;
   }
   return null;
 }
@@ -88,15 +115,20 @@ function parseMomentumRankings(lines: string[]): MomentumEntry[] {
   return [];
 }
 
+/** Default matches `strategy_maliki.rebalance_every` when log omits `(every N ticks)`. */
+const MALIKI_DEFAULT_REBAL_EVERY = 288;
+
 function parseRebalance(lines: string[]): RebalanceState | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
     if (!l.includes('[strategy_maliki] TIMER')) continue;
     const tickM = l.match(/tick=(\d+)/);
+    if (!tickM) continue;
     const rebalM = l.match(/every (\d+) ticks/);
-    if (tickM && rebalM) {
-      return { tickCount: parseInt(tickM[1]), rebalEvery: parseInt(rebalM[1]) };
-    }
+    return {
+      tickCount: parseInt(tickM[1], 10),
+      rebalEvery: rebalM ? parseInt(rebalM[1], 10) : MALIKI_DEFAULT_REBAL_EVERY,
+    };
   }
   return null;
 }
@@ -229,41 +261,65 @@ export const StrategyHealthPanel: FC<StrategyHealthPanelProps> = ({
   const [malikiPos, setMalikiPos] = useState<MalikiPositionState | null>(null);
   const [jhPairs, setJhPairs] = useState<Record<string, Partial<JHPairState>>>({});
   const [rebalFlash, setRebalFlash] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const [logsHint, setLogsHint] = useState<string | null>(null);
   const prevTick = useRef(0);
+  const mountedRef = useRef(true);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function poll() {
-      if (cancelled) return;
-      try {
-        const r = await api.logsTail(500);
-        if (!cancelled) {
-          const newRegime = parseRegime(r.lines);
-          const newMom = parseMomentumRankings(r.lines);
-          const newRebal = parseRebalance(r.lines);
-          const newTrail = parseMalikiTrail(r.lines);
-          const newJH = parseJHPairStates(r.lines);
-          if (newRegime) setRegime(newRegime);
-          if (newMom.length) setMomentum(newMom);
-          if (newRebal) {
-            if (prevTick.current > 0 && newRebal.tickCount < prevTick.current) {
-              setRebalFlash(true);
-              setTimeout(() => setRebalFlash(false), 2000);
-            }
-            prevTick.current = newRebal.tickCount;
-            setRebalance(newRebal);
-          }
-          setMalikiPos(newTrail);
-          setJhPairs(newJH);
+  const pollHealthFromLogs = useCallback(async () => {
+    try {
+      const r = await api.logsTail(1000);
+      if (!mountedRef.current) return;
+      setLogsHint(null);
+      const hasMaliki = r.lines.some((ln) => ln.includes('[strategy_maliki]'));
+      const hasJH = r.lines.some((ln) => ln.includes('[strategy_JH]'));
+      if (r.lines.length === 0) {
+        setLogsHint(
+          'No log lines returned — check server LOG_FILE / data/logs/system.log and that the engine is logging.',
+        );
+      } else if (!hasMaliki && !hasJH) {
+        setLogsHint(
+          'Tail has no [strategy_maliki] or [strategy_JH] lines — start those strategies (engine running alone is not enough).',
+        );
+      }
+      const newRegime = parseRegime(r.lines);
+      const newMom = parseMomentumRankings(r.lines);
+      const newRebal = parseRebalance(r.lines);
+      const newTrail = parseMalikiTrail(r.lines);
+      const newJH = parseJHPairStates(r.lines);
+      if (newRegime) setRegime(newRegime);
+      if (newMom.length) setMomentum(newMom);
+      if (newRebal) {
+        if (prevTick.current > 0 && newRebal.tickCount < prevTick.current) {
+          setRebalFlash(true);
+          setTimeout(() => setRebalFlash(false), 2000);
         }
-      } catch {
-        // ignore
+        prevTick.current = newRebal.tickCount;
+        setRebalance(newRebal);
+      }
+      setMalikiPos(newTrail);
+      setJhPairs(newJH);
+    } catch (e) {
+      if (mountedRef.current) {
+        setLogsHint(e instanceof Error ? e.message : 'Failed to fetch /logs/tail');
       }
     }
-    poll();
-    const t = setInterval(poll, 15000);
-    return () => { cancelled = true; clearInterval(t); };
   }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void pollHealthFromLogs();
+    const t = window.setInterval(() => void pollHealthFromLogs(), 15000);
+    return () => {
+      mountedRef.current = false;
+      window.clearInterval(t);
+    };
+  }, [pollHealthFromLogs]);
+
+  const handleManualRefresh = () => {
+    setRefreshBusy(true);
+    void pollHealthFromLogs().finally(() => setRefreshBusy(false));
+  };
 
   if (!engineRunning) {
     return (
@@ -293,6 +349,24 @@ export const StrategyHealthPanel: FC<StrategyHealthPanelProps> = ({
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-auto pr-1">
+      <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/30 px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] text-white/50">
+            Parsed from disk log tail · auto-refresh every 15s · same source as Logs tab
+          </span>
+          <button
+            type="button"
+            disabled={refreshBusy}
+            onClick={handleManualRefresh}
+            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-50 transition hover:border-white/40 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {refreshBusy ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
+        {logsHint && (
+          <p className="m-0 text-[11px] leading-snug text-amber-200/90">{logsHint}</p>
+        )}
+      </div>
       {/* ═══ STRATEGY_MALIKI ═══ */}
       <div className="rounded-lg border border-white/10 bg-white/5 p-3 shadow-[0_4px_12px_rgba(0,0,0,0.4)]">
         <div className="mb-3 flex items-center gap-2">
@@ -311,7 +385,11 @@ export const StrategyHealthPanel: FC<StrategyHealthPanelProps> = ({
             {regime ? (
               <div className="space-y-1.5">
                 <div>
-                  {regime.bullish ? (
+                  {regime.insufficientData ? (
+                    <span className="inline-flex items-center gap-2 rounded-lg border border-amber-400/60 bg-amber-500/15 px-4 py-1.5 text-lg font-bold text-amber-200">
+                      WARMING UP
+                    </span>
+                  ) : regime.bullish ? (
                     <span className="inline-flex items-center gap-2 rounded-lg border border-emerald-400/60 bg-emerald-500/15 px-4 py-1.5 text-lg font-bold text-emerald-300">
                       BULL
                     </span>
@@ -321,15 +399,21 @@ export const StrategyHealthPanel: FC<StrategyHealthPanelProps> = ({
                     </span>
                   )}
                 </div>
-                <div className="font-mono text-xs text-white/70">
-                  BTC <span className="text-slate-100">${regime.btcPrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                  {' | '}MA <span className="text-slate-100">${regime.btcMa.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                  {' | '}
-                  <span className={regime.bullish ? 'text-emerald-400' : 'text-rose-400'}>
-                    {regime.spreadPct >= 0 ? '+' : ''}{regime.spreadPct.toFixed(1)}% {regime.bullish ? 'above' : 'below'}
-                  </span>
-                </div>
-                {!regime.bullish && (
+                {regime.insufficientData ? (
+                  <div className="text-xs text-white/70">
+                    Not enough BTC history for the regime MA yet, or rebalance has not logged — check TIMER / REBALANCE lines in Logs.
+                  </div>
+                ) : (
+                  <div className="font-mono text-xs text-white/70">
+                    BTC <span className="text-slate-100">${regime.btcPrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                    {' | '}MA <span className="text-slate-100">${regime.btcMa.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                    {' | '}
+                    <span className={regime.bullish ? 'text-emerald-400' : 'text-rose-400'}>
+                      {regime.spreadPct >= 0 ? '+' : ''}{regime.spreadPct.toFixed(1)}% {regime.bullish ? 'above' : 'below'}
+                    </span>
+                  </div>
+                )}
+                {!regime.bullish && !regime.insufficientData && (
                   <div className="mt-1 rounded border border-rose-400/30 bg-rose-500/5 px-2 py-1 text-[11px] text-rose-200">
                     Strategy is in CASH — waiting for BTC to cross above MA
                   </div>
@@ -423,6 +507,7 @@ export const StrategyHealthPanel: FC<StrategyHealthPanelProps> = ({
                 <Badge color="gray">FLAT</Badge>
                 <div className="text-xs text-white/50">
                   {!regime ? 'Waiting for data...'
+                    : regime.insufficientData ? 'Reason: Still warming up (BTC MA / logs)'
                     : !regime.bullish ? 'Reason: BEAR regime'
                     : momentum.length === 0 ? 'Reason: No momentum above threshold'
                     : 'Reason: Waiting for rebalance'}

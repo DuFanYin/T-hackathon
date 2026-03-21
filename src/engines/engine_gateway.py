@@ -724,8 +724,6 @@ class GatewayEngine(BaseEngine):
             try:
                 if hasattr(self.main_engine, "strategy_engine"):
                     self.main_engine.strategy_engine.on_order(merged)
-                if hasattr(self.main_engine, "risk_engine"):
-                    self.main_engine.risk_engine.on_order(merged)
             except Exception:
                 pass
 
@@ -865,8 +863,6 @@ class GatewayEngine(BaseEngine):
                         pass
                 if hasattr(me, "strategy_engine"):
                     me.strategy_engine.on_order(updated)
-                if hasattr(me, "risk_engine"):
-                    me.risk_engine.on_order(updated)
 
             if status in _FINISHED_STATUSES:
                 finished.append(oid)

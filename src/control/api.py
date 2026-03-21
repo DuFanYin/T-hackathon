@@ -121,12 +121,11 @@ def create_app(engine_manager: EngineManager) -> FastAPI:
 
     @app.get("/account/pnl")
     def account_pnl():
-        """Current equity, PnL and PnL % from risk engine."""
+        """Current equity, PnL and PnL % vs baseline (from cached balance)."""
         main_engine = _eng()
-        risk = getattr(main_engine, "risk_engine", None)
-        if risk is None or not hasattr(risk, "get_current_pnl"):
+        if not hasattr(main_engine, "get_account_pnl"):
             return {"equity": 0.0, "init_balance": 0.0, "pnl": 0.0, "pnl_pct": 0.0}
-        return risk.get_current_pnl()
+        return main_engine.get_account_pnl()
 
     # ------------------------------------------------------------------
     # Orders DB (SQLite)

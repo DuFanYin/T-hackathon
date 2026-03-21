@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 
 class BaseEngine:
-    """Base for gateway, strategy, position, risk, and event engines; provides main_engine and close()."""
+    """Base for gateway, strategy, position, and event engines; provides main_engine and close()."""
 
     def __init__(
         self,

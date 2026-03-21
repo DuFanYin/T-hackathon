@@ -8,12 +8,11 @@ import os
 import threading
 import time
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Any, Optional
 
 from .engine_event import Event, EventEngine
 from .engine_gateway import GatewayEngine
 from .engine_market import MarketEngine
-from .engine_risk import RiskEngine
 from .engine_strategy import AVAILABLE_STRATEGIES, StrategyEngine
 from src.control.log_store import LogStore
 from src.control.order_store import OrderStore
@@ -100,6 +99,9 @@ _FALLBACK_PAIR_RULES: dict[str, dict] = {
     "ZENUSDT":         {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
 }
 
+# Default notional baseline for PnL % in UI (matches prior RiskEngine default).
+_ACCOUNT_PNL_INIT_DEFAULT = 50000.0
+
 
 class MainEngine:
     """Builds all engines, starts the event loop, and exposes put_event, handle_intent, send_order, cancel_order."""
@@ -129,7 +131,7 @@ class MainEngine:
         self.market_engine = MarketEngine(main_engine=self)
         self.gateway_engine = GatewayEngine(main_engine=self, env_mode=self.env_mode)
         self.strategy_engine = StrategyEngine(main_engine=self)
-        self.risk_engine = RiskEngine(main_engine=self)
+        self._account_pnl_init: float = _ACCOUNT_PNL_INIT_DEFAULT
         self.write_log("init: engines constructed", level="INFO", source="System")
 
         # One-time discovery with retries + fallback.
@@ -274,6 +276,38 @@ class MainEngine:
     def put_event(self, event_type: str, data: object | None = None) -> None:
         """Enqueue an event on the event engine."""
         self.event_engine.put(Event(event_type, data))
+
+    @staticmethod
+    def _parse_equity_usd(bal: dict[str, Any] | None) -> float:
+        """Total USD/USDT equity from gateway cached balance (Wallet or SpotWallet)."""
+        if not bal or not isinstance(bal, dict):
+            return 0.0
+        wallet = bal.get("Wallet") or bal.get("SpotWallet")
+        if not wallet or not isinstance(wallet, dict):
+            return 0.0
+        total = 0.0
+        for asset, entry in wallet.items():
+            if not isinstance(entry, dict):
+                continue
+            free = float(entry.get("Free") or entry.get("free") or 0)
+            lock = float(entry.get("Lock") or entry.get("lock") or 0)
+            if str(asset).upper() in ("USD", "USDT", "BUSD"):
+                total += free + lock
+        return total
+
+    def get_account_pnl(self) -> dict[str, float]:
+        """
+        Equity and PnL vs a fixed baseline for the control UI.
+        Returns: { equity, init_balance, pnl, pnl_pct }
+        """
+        bal = self.gateway_engine.get_cached_balance()
+        equity = self._parse_equity_usd(bal)
+        init = self._account_pnl_init
+        if init <= 0:
+            return {"equity": equity, "init_balance": init, "pnl": 0.0, "pnl_pct": 0.0}
+        pnl = equity - init
+        pnl_pct = (pnl / init) * 100.0
+        return {"equity": equity, "init_balance": init, "pnl": pnl, "pnl_pct": pnl_pct}
 
     def write_log(self, message: str, level: str = "INFO", source: str = "System") -> None:
         """Append a line to the system log stream (used by engines and control-plane UI)."""

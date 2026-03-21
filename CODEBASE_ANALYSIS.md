@@ -39,7 +39,6 @@ T-Hackathon is an **event-driven cryptocurrency trading engine** with a FastAPI 
 │  MarketEngine ─ Binance klines, ATR, pivots      │
 │  GatewayEngine ─ Roostoo REST, order polling     │
 │  StrategyEngine ─ strategy registry, holdings    │
-│  RiskEngine ─ drawdown + ATR volatility checks   │
 │  OrderStore (SQLite) · LogStore (in-memory tail) │
 └─────────────────────────────────────────────────┘
 ```
@@ -50,7 +49,6 @@ T-Hackathon is an **event-driven cryptocurrency trading engine** with a FastAPI 
 2. `GatewayEngine.on_timer()` — poll order status, refresh account
 3. `StrategyEngine.process_timer_event()` — mark-to-market PnL
 4. `StrategyEngine.on_timer()` — run each strategy's logic
-5. `RiskEngine.on_timer()` — check drawdown limits
 
 ---
 
@@ -64,8 +62,7 @@ T-hackathon/
 │   │   ├── engine_event.py      # Event router + timer thread
 │   │   ├── engine_gateway.py    # Roostoo REST adapter + order polling
 │   │   ├── engine_market.py     # Binance klines, ATR, pivot indicators
-│   │   ├── engine_strategy.py   # Strategy registry & holdings accounting
-│   │   └── engine_risk.py       # Drawdown + ATR volatility monitoring
+│   │   └── engine_strategy.py   # Strategy registry & holdings accounting
 │   ├── strategies/        # Trading strategy implementations
 │   │   ├── template.py          # Base class (StrategyTemplate)
 │   │   └── factory/
@@ -181,23 +178,9 @@ T-hackathon/
 
 ---
 
-## Risk Management
+## Account PnL (dashboard)
 
-The `RiskEngine` provides:
-
-- **Drawdown monitoring** — tracks equity vs. initial balance ($50,000); 10% max drawdown
-- **ATR-based dynamic limit** — `min(config_max, avg_atr_pct × 2.0)`
-- **Breach response** — force close all positions, stop all strategies
-- **Account PnL tracking** — exposed via `/account/pnl` endpoint
-
-```python
-RISK_CONFIG = {
-    "max_drawdown_pct": 10.0,
-    "atr_drawdown_multiplier": 2.0,
-    "atr_daily_len": 14,
-    "atr_log_every_ticks": 60,
-}
-```
+`MainEngine.get_account_pnl()` compares cached USD/USDT wallet equity (from `GatewayEngine.get_cached_balance()`) to a fixed baseline (default **$50,000**) and powers `GET /account/pnl` for the UI. There is no drawdown / auto-stop engine.
 
 ---
 
@@ -210,7 +193,7 @@ Binance (klines) ──► MarketEngine ──► bars + indicators (ATR, pivots
 Roostoo (REST) ◄──► GatewayEngine ──► order fills ──► StrategyEngine
        │                                                    │
        │                                                    ▼
-       └── balance/orders ──────────► RiskEngine ──► drawdown checks
+       └── balance/orders ──► cached snapshots (control API / UI)
                                           │
                                           ▼
                                      LogStore ──► SSE ──► Dashboard
@@ -252,7 +235,6 @@ pytest tests/ -v
 |-----------|----------|
 | `test_engine_main.py` | MainEngine lifecycle (add/get/start/stop strategy) |
 | `test_engine_strategy.py` | Holdings accounting (apply fills, mark-to-market) |
-| `test_engine_risk.py` | Drawdown checks, ATR calculation |
 | `test_engine_manager.py` | EngineManager start/stop, mode tracking |
 | `test_strategies.py` | All three strategies (construction, history reqs, on_timer) |
 | `test_utilities.py` | Event objects, order models, position data |

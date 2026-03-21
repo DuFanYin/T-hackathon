@@ -53,7 +53,6 @@ def _mock_main():
     main.gateway_engine.trading_pairs = []
     main.market_engine = MagicMock()
     main.strategy_engine = MagicMock()
-    main.risk_engine = MagicMock()
     main.handle_intent = MagicMock(return_value="order-123")
     main.get_pending_orders_by_symbol = MagicMock(return_value={})
     main.put_event = MagicMock()
@@ -70,7 +69,6 @@ def _functional_main():
     main.market_engine = MarketEngine(main_engine=None)
     main.put_event = MagicMock()
     main.strategy_engine = StrategyEngine(main_engine=main)
-    main.risk_engine = MagicMock()
     main.event_engine = EventEngine(main_engine=main)
     main.gateway_engine = MagicMock()
     main.gateway_engine.trading_pairs = []

@@ -13,7 +13,6 @@ from .events import (
     EVENT_BAR,
     EVENT_LOG,
     EVENT_ORDER,
-    EVENT_RISK_ALERT,
     EVENT_TIMER,
 )
 from .intents import (
@@ -28,7 +27,6 @@ __all__ = [
     "EVENT_BAR",
     "EVENT_LOG",
     "EVENT_ORDER",
-    "EVENT_RISK_ALERT",
     "EVENT_TIMER",
     "INTENT_CANCEL_ORDER",
     "INTENT_LOG",

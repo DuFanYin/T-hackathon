@@ -6,7 +6,7 @@ Event-driven crypto trading engine with a lightweight **HTTP control API** and *
 
 ## What’s here
 
-- **Core engine** under `src/` (main, market, strategy, positions, risk).
+- **Core engine** under `src/` (main, market, strategy, gateway, event).
 - **HTTP control API** (`api_server.py` + `src/control/*`), powered by FastAPI.
 - **Web dashboard** in `frontend/` (React + TypeScript + Vite) with a gray, card-based UI:
   - `System` tab – start/stop engine in `mock` or `real` mode and see health.
