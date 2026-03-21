@@ -1,9 +1,0 @@
-{
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "https://marlyn-auntlike-verla.ngrok-free.dev/$1"
-    }
-  ]
-}
-
