@@ -4,7 +4,7 @@ Run system + both strategies in one process, suitable for background use.
 
 Behavior:
 - Creates MainEngine
-- Starts strategy_maliki + strategy_JH
+- Starts strategy_maliki, strategy_JH, and StratTestAlt
 - Keeps process alive until SIGINT/SIGTERM
 
 Example:
@@ -27,8 +27,8 @@ load_dotenv(os.path.join(root_dir, ".env"))
 
 from src.engines.engine_main import MainEngine
 
-ENGINE_MODE = "live"
-STRATEGIES = ("strategy_maliki", "strategy_JH")
+ENGINE_MODE = os.getenv("ENGINE_MODE", "live")
+STRATEGIES = ("strategy_maliki", "strategy_JH", "StratTestAlt")
 
 _keep_running = True
 

@@ -36,7 +36,8 @@ class TestStratTestAlt:
         assert strat.strategy_name == "StratTestAlt_Test"
         assert strat.symbol == "BTCUSDT"
         assert strat.quantity == 0.01
-        assert strat._next_action_open is True
+        assert strat._close_scheduled_at is None
+        assert strat._last_cycle_complete_time == 0.0
 
     def test_construction_with_setting(self):
         main = _main_engine_mock()
