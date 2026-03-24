@@ -100,7 +100,7 @@ _FALLBACK_PAIR_RULES: dict[str, dict] = {
 }
 
 # Default notional baseline for PnL % in UI (matches prior RiskEngine default).
-_ACCOUNT_PNL_INIT_DEFAULT = 50000.0
+_ACCOUNT_PNL_INIT_DEFAULT = 1000000.0
 
 
 class MainEngine:

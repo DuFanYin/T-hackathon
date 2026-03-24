@@ -45,7 +45,7 @@ class GatewayEngine(BaseEngine):
         engine_name: str = "Gateway",
         trading_pairs: Optional[list[str]] = None,
         env_mode: str = "mock",
-        use_competition_keys: bool = False,
+        use_competition_keys: Optional[bool] = None,
     ) -> None:
         super().__init__(main_engine=main_engine, engine_name=engine_name)
         # Optional override from main; if empty, this engine will discover tradeable pairs
@@ -53,8 +53,15 @@ class GatewayEngine(BaseEngine):
         self.trading_pairs: list[str] = list(trading_pairs) if trading_pairs else []
         # Filled from exchangeInfo on startup (same dict object as MainEngine.trading_pairs_by_symbol).
         self.trading_pairs_by_symbol: dict[str, TradingPair] = {}
-        self.use_competition_keys: bool = use_competition_keys
-        self.env_mode: str = env_mode.strip().lower() if env_mode else "mock"
+        raw_mode = env_mode.strip().lower() if env_mode else "mock"
+        # Backward-compat alias: "live" means real trading mode.
+        self.env_mode: str = "real" if raw_mode in ("real", "live") else "mock"
+        # Default key-set policy:
+        # - real/live -> competition keys
+        # - mock -> general testing keys
+        self.use_competition_keys: bool = (
+            (self.env_mode == "real") if use_competition_keys is None else bool(use_competition_keys)
+        )
 
         # Base URL selection:
         # - mock: override via ROOSTOO_MOCK_BASE_URL, else DEFAULT_MOCK_BASE_URL
@@ -65,7 +72,7 @@ class GatewayEngine(BaseEngine):
         else:
             self.base_url = os.getenv("ROOSTOO_MOCK_BASE_URL", self.DEFAULT_MOCK_BASE_URL)
 
-        if use_competition_keys:
+        if self.use_competition_keys:
             self._api_key = os.getenv("Competition_API_KEY", "")
             self._secret = os.getenv("Competition_API_SECRET", "")
         else:
@@ -74,7 +81,11 @@ class GatewayEngine(BaseEngine):
 
         # Log if signed endpoints may fail (401) due to missing credentials
         if not self._api_key or not self._secret:
-            key_src = "Competition_API_KEY/SECRET" if use_competition_keys else "General_Portfolio_Testing_API_KEY/SECRET"
+            key_src = (
+                "Competition_API_KEY/SECRET"
+                if self.use_competition_keys
+                else "General_Portfolio_Testing_API_KEY/SECRET"
+            )
             self.log(
                 f"WARN: Gateway API keys empty or missing | env={key_src} | "
                 f"signed endpoints (/v3/balance, /v3/place_order, etc.) will fail with 401",

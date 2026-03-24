@@ -30,7 +30,7 @@ def main() -> int:
     from src.engines.engine_strategy import AVAILABLE_STRATEGIES
 
     print("[run_engine] Starting MainEngine (mode=mock)...")
-    main_engine = MainEngine(env_mode="mock")
+    main_engine = MainEngine(env_mode="live")
 
     # Add all strategies
     for name in sorted(AVAILABLE_STRATEGIES.keys()):
