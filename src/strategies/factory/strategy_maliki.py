@@ -737,12 +737,19 @@ class StrategyMaliki(StrategyTemplate):
             level="INFO",
         )
 
-        self.close_position(
+        order_id = self.close_position(
             symbol=f"{coin}USDT",
             quantity=qty,
             order_type="MARKET",
         )
-        self._risk_state.pop(coin, None)
+        if order_id:
+            self._risk_state.pop(coin, None)
+        else:
+            self.write_log(
+                f"[strategy_maliki] SELL FAILED | {coin} | reason={reason} — "
+                f"keeping risk_state (peak={self._risk_state.get(coin, {}).get('peak_price')}) to retry next tick",
+                level="ERROR",
+            )
 
     def _close_all_positions(self, reason: str) -> None:
         """Close all positions."""
