@@ -1,6 +1,6 @@
 @startuml
-' T-hackathon — whole-project architecture (current)
-' Render with any PlantUML viewer.
+' T-hackathon — architecture (current)
+' Regenerate SVG: plantuml doc/ARCHITECTURE.puml
 
 skinparam shadowing false
 skinparam componentStyle rectangle
@@ -35,13 +35,12 @@ title T-hackathon — End-to-end Architecture
 actor Operator as op
 
 cloud "Public Internet / Hosting" as hosting {
-  rectangle "Vercel\n(frontend hosting)" as vercel
+  rectangle "Static host (e.g. Vercel)\noptional" as vercel
 }
 
-frame "Browser (operator machine)" as browser {
-  rectangle "React Dashboard (SPA)" as ui
-  rectangle "API client" as ui_api
-  rectangle "EventSource (SSE)\n/logs/stream" as sse
+frame "Browser" as browser {
+  rectangle "React dashboard (Vite)" as ui
+  rectangle "fetch client\npoll ~3s + GET /logs/tail" as ui_api
 }
 
 frame "Backend (one Python process)" as backend {
@@ -50,49 +49,47 @@ frame "Backend (one Python process)" as backend {
 
   frame "Trading engine (in-process)" as engine {
     rectangle "MainEngine\n(composition root)" as main
-    rectangle "EventEngine\n(timer thread + worker thread)" as event
+    rectangle "EventEngine\n(timer + worker)" as event
 
-    rectangle "GatewayEngine\n(Roostoo REST + order polling + account cache)" as gateway
-    rectangle "MarketEngine\n(Binance klines + indicators)" as market
-    rectangle "StrategyEngine\n(strategies + holdings/PnL)" as strat
+    rectangle "GatewayEngine\nRoostoo REST\n(mock|real keys)" as gateway
+    rectangle "MarketEngine\nBinance klines" as market
+    rectangle "StrategyEngine\nholdings + PnL" as strat
   }
 
   rectangle "OrderStore" as order_store
-  rectangle "LogStore\n(in-memory tail + SSE subscribers)" as log_store
+  rectangle "LogStore\n+ rotating file" as log_store
 }
 
-database "SQLite DB\n(data/orders/orders.db)\n- orders_latest\n- order_updates" as sqlite
-database "Rotating log file\n(data/logs/system.log)" as log_file
+database "SQLite\n(data/orders/orders.db)" as sqlite
+database "Rotating log\n(data/logs/system.log)" as log_file
 
 cloud "External APIs" as external {
-  rectangle "Roostoo REST API\n/mock or /real\n(v3/* endpoints)" as roostoo
-  rectangle "Binance REST API\n/api/v3/klines" as binance
+  rectangle "Roostoo REST\n(v3/*)\nsame host; keys by mode" as roostoo
+  rectangle "Binance REST\n/api/v3/klines" as binance
 }
 
-op --> vercel : open dashboard URL
-vercel --> ui : serve static assets\n(HTML/CSS/JS)
+op --> vercel : optional HTTPS
+vercel --> ui : static assets
 
-ui --> ui_api : calls
-ui_api --> fastapi : HTTP JSON\n/system/*, /strategies/*,\n/positions, /pairs,\n/account/*, /orders,\n/logs/tail
-sse --> fastapi : SSE\nGET /logs/stream
+ui --> ui_api
+ui_api --> fastapi : JSON\n/system/*, /strategies/*,\n/positions, /pairs,\n/account/*, /orders,\n/logs/tail
 
-fastapi --> mgr : start/stop/status\n(Engine lifecycle)
-mgr --> main : create MainEngine(env_mode)\nstop EventEngine
+fastapi --> mgr : lifecycle
+mgr --> main : MainEngine(env_mode)
 
-main --> event : start/stop\n(route events + timer ticks)
+main --> event : route + timer
 event --> market : on_timer()
 event --> gateway : on_timer()
-event --> strat : process_timer_event(); on_timer()
+event --> strat : process_timer();\n on_timer()
 
-main --> log_store : write_log()\n(tail + fanout)
-log_store --> fastapi : stream log lines\n(SSE subscribers)
-main --> log_file : append + rotate\n(LOG_FILE / LOG_MAX_BYTES)
+main --> log_store : write_log()
+log_store --> log_file
 
-gateway --> roostoo : place/cancel/query\n+ exchangeInfo
-market --> binance : fetch klines\n(throttled)
+gateway --> roostoo : signed REST
+market --> binance : public klines
 
-gateway --> order_store : upsert order updates
-order_store --> sqlite : read/write
-fastapi --> sqlite : GET /orders\n(read-only query)
+gateway --> order_store : order updates
+order_store --> sqlite
+fastapi --> sqlite : GET /orders
 
 @enduml

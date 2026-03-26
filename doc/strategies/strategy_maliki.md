@@ -18,8 +18,8 @@ STRATEGY STEP (timer_trigger=300: ~5m per step if EventEngine interval=1s)
 │     ├─ ticks_held = tick_count - entry_tick < min_hold_candles → skip
 │     └─ else drawdown from peak >= trailing_stop_pct → SELL MARKET (_close_position)
 │
-└─ REBALANCE? tick_count % rebalance_every == 0
-   ├─ yes → _rebalance
+└─ REBALANCE? (tick_count % rebalance_every == 0) OR (tick_count == 1)
+   ├─ yes → _rebalance  (first strategy step always runs rebalance logic once warmup passes)
    │  ├─ Regime: BTC_last > MA(regime_ma_candles on BTCUSDT 5m closes)?
    │  │  ├─ NO (bearish)
    │  │  │  └─ for each held coin:

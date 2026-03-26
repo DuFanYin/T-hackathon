@@ -1,63 +1,53 @@
 # T-hackathon
 
-Event-driven crypto trading engine with a lightweight **HTTP control API** and **React dashboard**.
+**An event-driven automated trading stack** built for the Roostoo ecosystem: a Python engine that runs multiple strategies against live-style APIs, with a **FastAPI control plane** and a **React dashboard** for monitoring positions, account state, and logs in one place.
+
+<img src="doc/ARCHITECTURE.svg" alt="Architecture Diagram" width="750" />
+
+View full architecture diagram & codebase design at:
+
+  - [Architecture notes](doc/ARCHITECTURE.md)
+  - [Codebase design](doc/CODEBASE.md)
 
 ---
 
-## What’s here
+## What you’re looking at
 
-- **Core engine** under `src/` (main, market, strategy, gateway, event).
-- **HTTP control API** (`api_server.py` + `src/control/*`), powered by FastAPI.
-- **Web dashboard** in `frontend/` (React + TypeScript + Vite) with a gray, card-based UI:
-  - `System` tab – start/stop engine in `mock` or `real` mode and see health.
-  - `Strategies` tab – add/init/start/stop/delete strategies and see PnL/positions.
-  - `Symbols` tab – live market snapshots for all symbols.
-  - `Logs` tab – tail and stream engine logs.
+- **Trading engine** — timer-driven loop: market data (Binance klines), strategy logic, and order execution / account sync via Roostoo’s signed REST API.
+- **Strategies** — pluggable modules (e.g. multi-asset momentum rotation, intraday support-bounce logic, plus a small heartbeat strategy for integration tests).
+- **Operator UI** — start/stop the engine and individual strategies, view holdings and PnL-style snapshots, tail logs (including streaming), without digging through raw JSON logs.
+- **Separation of concerns** — execution and caching live in the gateway; the HTTP layer exposes control and read-only snapshots suitable for a dashboard or remote ops.
 
----
-
-## Backend setup
-
-1. **Install deps**
-
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-   pip install -r requirements.txt
-   ```
-
-2. **Env config** (repo root `.env`)
-
-   See `.env.sample`; typical keys:
-
-   - `General_Portfolio_Testing_API_KEY`
-   - `General_Portfolio_Testing_API_SECRET`
-   - Optional `ROOSTOO_MOCK_BASE_URL` / `ROOSTOO_REAL_BASE_URL`
-   - Optional `CONTROL_HOST` / `CONTROL_PORT` / `CONTROL_CORS_ORIGINS`
-
-3. **Run control API**
-
-   ```bash
-   # mock (paper) mode
-   python api_server.py mock
-
-   # or real mode
-   python api_server.py real
-   ```
-
-   This creates the engine, loads `strategies_config.json`, and exposes endpoints such as:
-
-   - `GET /system/status`, `POST /system/start`, `POST /system/stop`
-   - `GET /strategies/available`, `GET /strategies/running`
-   - `POST /strategies/start|stop`
-   - `GET /positions`, `GET /symbols`
-   - `GET /logs/tail`, `GET /logs/stream` (SSE)
+This README is meant as a **project showcase for judges**. For step-by-step production or EC2 deployment, see **`README_DEPLOY.md`**. Deeper architecture notes live in **`CODEBASE_ANALYSIS.md`**.
 
 ---
 
-## Frontend setup
+## Tech stack (at a glance)
 
-From `frontend/`:
+| Layer | Notes |
+|--------|--------|
+| Engine | Python — event loop, strategy registry, Roostoo gateway, SQLite-backed order history where applicable |
+| Control API | FastAPI + Uvicorn |
+| Dashboard | React, TypeScript, Vite |
+| Exchange | Roostoo v3 (orders / balances); Binance public data for bars |
+
+---
+
+## Setup (for reviewers who want to run it)
+
+**Backend**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.sample .env         # fill keys — see comments inside .env.sample
+python api_server.py
+```
+
+Default listen: `http://0.0.0.0:8000`. After startup, use the dashboard to start the engine in **mock** or **real** mode and to start strategies by name.
+
+**Frontend**
 
 ```bash
 cd frontend
@@ -65,30 +55,37 @@ npm install
 npm run dev
 ```
 
-By default the app assumes the backend is on `http://localhost:8000` (configurable via `VITE_API_BASE` in `frontend/.env`).
+Point the app at your API with `VITE_API_BASE` if needed (`frontend/.env.example`).
 
-Tabs talk to the control API:
-
-- `System` → `/system/*`, `/health`
-- `Strategies` → `/strategies/*`, `/positions`, `/pairs`
-- `Symbols` → `/symbols`
-- `Logs` → `/logs/tail`, `/logs/stream`
+**Optional:** `./run_backend.sh` recreates a Python 3.12 venv and launches the API (see script header).
 
 ---
 
-## Running everything together
+## Configuration (short)
 
-1. Start backend control API:
+- Copy **`.env.sample`** → **`.env`** and set Roostoo keys (general testing vs competition, depending on mode).
+- **`mock`** vs **`real`** mainly selects which key pair the gateway uses; the public API host is typically the same.
+- CORS, port, and environment flags are documented in `.env.sample`; production-style runbooks are in **`README_DEPLOY.md`**.
 
-   ```bash
-   python api_server.py mock
-   ```
+---
 
-2. Start frontend dev server:
+## Repository map
 
-   ```bash
-   cd frontend
-   npm run dev
-   ```
+| Path | Role |
+|------|------|
+| `src/engines/` | Main engine, event loop, market, gateway, strategies |
+| `src/strategies/` | Strategy implementations and shared template |
+| `src/control/` | FastAPI app, engine lifecycle, log/order helpers |
+| `frontend/` | Dashboard |
+| `scripts/` | Utilities (background runner, API checks, account helpers) |
+| `tests/` | Pytest suite |
 
-3. Open the URL from Vite (typically `http://localhost:5173`) and use the UI instead of CLI.
+Strategy write-ups: **`doc/strategies/`**.
+
+---
+
+## Testing
+
+```bash
+pytest -q
+```

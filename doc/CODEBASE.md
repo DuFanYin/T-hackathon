@@ -24,12 +24,12 @@ T-Hackathon is an **event-driven cryptocurrency trading engine** with a FastAPI 
 ```
 ┌─────────────────────────────────────────────────┐
 │           React Dashboard (frontend/)           │
-│     Polling (3s) + SSE for live log stream      │
+│     Polling (3s); logs via GET /logs/tail       │
 └────────────────┬────────────────────────────────┘
                  │ HTTP
 ┌────────────────▼────────────────────────────────┐
 │       FastAPI Control Plane (api_server.py)      │
-│   CORS · optional x-admin-token auth · 20+ routes│
+│   CORS · JSON routes (see src/control/api.py)   │
 └────────────────┬────────────────────────────────┘
                  │ EngineManager
 ┌────────────────▼────────────────────────────────┐
@@ -68,7 +68,7 @@ T-hackathon/
 │   │   └── factory/
 │   │       ├── strategy_maliki.py   # 48h momentum rotation
 │   │       ├── strategy_JH.py      # 15m support-bounce scalper
-│   │       └── strat_test_alt.py   # Simple BUY/SELL heartbeat (testing)
+│   │       └── strat_test_alt.py   # MARKET open/close test (BTCUSDT)
 │   ├── control/           # HTTP API + lifecycle
 │   │   ├── api.py               # FastAPI routes (20+ endpoints)
 │   │   ├── engine_manager.py    # Engine lifetime management
@@ -88,7 +88,8 @@ T-hackathon/
 │       │   ├── StrategiesPanel.tsx   # Strategy table, holdings, controls
 │       │   ├── AccountValuePanel.tsx # Balance, equity, P&L
 │       │   ├── OrdersPanel.tsx      # Cached orders table
-│       │   └── LogsPanel.tsx        # Scrollable live log viewer
+│       │   ├── StrategyHealthPanel.tsx # Per-strategy health snapshots
+│       │   └── LogsPanel.tsx        # Log tail (GET /logs/tail)
 │       └── lib/
 │           ├── api.ts           # Typed fetch wrapper + admin token
 │           └── types.ts         # TypeScript interface definitions
@@ -112,9 +113,9 @@ T-hackathon/
 | | `/system/status` | GET | Engine running state |
 | | `/system/start` | POST | Start engine (`mode: mock\|real`) |
 | | `/system/stop` | POST | Stop engine |
-| **Auth** | `/auth/check` | GET | Validate admin token |
 | **Strategies** | `/strategies/available` | GET | List all registered strategies |
 | | `/strategies/running` | GET | Running strategies + holdings |
+| | `/strategies/health` | GET | In-memory `health_snapshot()` per strategy |
 | | `/strategies/start` | POST | Start a strategy by name |
 | | `/strategies/stop` | POST | Stop a strategy by name |
 | **Positions** | `/positions` | GET | Current holdings per strategy |
@@ -127,7 +128,6 @@ T-hackathon/
 | **Orders** | `/orders` | GET | Query SQLite order history |
 | **Market** | `/pairs` | GET | All discovered trading pairs |
 | **Logs** | `/logs/tail` | GET | Last N log lines |
-| | `/logs/stream` | GET | SSE live log stream |
 
 ---
 
@@ -170,17 +170,17 @@ T-hackathon/
 3. Enter on third touch; stop below support; target at 2× risk/reward.
 4. Monitor exits every 5m (stop/target hit or timeout).
 
-### 3. StratTestAlt — Heartbeat Test
+### 3. StratTestAlt — Integration test
 
 - **Asset:** BTCUSDT only
-- **Pattern:** Alternating BUY → SELL every minute
+- **Pattern:** MARKET open → wait 5s → MARKET close; repeat on a ~4h cadence (configurable)
 - **Purpose:** Plumbing verification and smoke testing
 
 ---
 
 ## Account PnL (dashboard)
 
-`MainEngine.get_account_pnl()` compares cached USD/USDT wallet equity (from `GatewayEngine.get_cached_balance()`) to a fixed baseline (default **$50,000**) and powers `GET /account/pnl` for the UI. There is no drawdown / auto-stop engine.
+`MainEngine.get_account_pnl()` compares cached USD/USDT wallet equity (from `GatewayEngine.get_cached_balance()`) to a fixed baseline (see `_ACCOUNT_PNL_INIT_DEFAULT` in `engine_main.py`) and powers `GET /account/pnl` for the UI. There is no drawdown / auto-stop engine.
 
 ---
 
@@ -196,14 +196,14 @@ Roostoo (REST) ◄──► GatewayEngine ──► order fills ──► Strate
        └── balance/orders ──► cached snapshots (control API / UI)
                                           │
                                           ▼
-                                     LogStore ──► SSE ──► Dashboard
+                                     LogStore ──► file tail ──► Dashboard (poll)
 ```
 
 - **Market data** comes from Binance (public, no auth).
 - **Order execution** goes through Roostoo (HMAC-SHA256 signed).
 - **Order status** is polled every ~10 ticks from Roostoo.
 - **Holdings** are computed from fill deltas, mark-to-market priced via MarketEngine.
-- **Frontend** polls the control API every 3 seconds and streams logs via SSE.
+- **Frontend** polls the control API every 3 seconds; logs use `GET /logs/tail` (manual refresh on Logs tab).
 
 ---
 
