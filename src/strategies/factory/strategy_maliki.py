@@ -531,6 +531,7 @@ class StrategyMaliki(StrategyTemplate):
         snap = self._regime_snapshot()
         regime = bool(snap and snap[0])
         held = self._engine_positions()
+        will_close: set[str] = set()
         if snap:
             bull, btc_p, btc_ma = snap
             self.write_log(
@@ -617,6 +618,7 @@ class StrategyMaliki(StrategyTemplate):
                         f"[strategy_maliki] ROTATION EXIT | {coin} dropped from top {self.top_n}",
                         level="INFO",
                     )
+                    will_close.add(coin)
                     self._close_position(coin, "rotation")
 
         # Enter new targets
@@ -624,18 +626,21 @@ class StrategyMaliki(StrategyTemplate):
         for rank_info in rankings[:self.top_n]:
             coin = rank_info["coin"]
             sym = f"{coin}USDT"
-            if coin in held or pending_by_symbol.get(sym):
+            # Treat coins we are closing this cycle as "not held" so rotation can submit the new entry
+            # in the same rebalance step (otherwise slots_open stays 0 until the SELL fill arrives).
+            effective_held = {c: q for c, q in held.items() if c not in will_close}
+            if coin in effective_held or pending_by_symbol.get(sym):
                 self.write_log(
-                    f"[strategy_maliki] ENTRY skip | {coin} already_held={coin in held} "
+                    f"[strategy_maliki] ENTRY skip | {coin} already_held={coin in effective_held} "
                     f"pending_on_{sym}={bool(pending_by_symbol.get(sym))}",
                     level="INFO",
                 )
                 continue  # already holding
 
-            slots_open = self.top_n - len(held)
+            slots_open = self.top_n - len(effective_held)
             if slots_open <= 0:
                 self.write_log(
-                    f"[strategy_maliki] ENTRY skip | slots_open={slots_open} held={list(held.keys())}",
+                    f"[strategy_maliki] ENTRY skip | slots_open={slots_open} held={list(effective_held.keys())} will_close={sorted(list(will_close))}",
                     level="INFO",
                 )
                 break
