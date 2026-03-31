@@ -180,7 +180,7 @@ T-hackathon/
 
 ## Account PnL (dashboard)
 
-`MainEngine.get_account_pnl()` compares cached USD/USDT wallet equity (from `GatewayEngine.get_cached_balance()`) to a fixed baseline (see `_ACCOUNT_PNL_INIT_DEFAULT` in `engine_main.py`) and powers `GET /account/pnl` for the UI. There is no drawdown / auto-stop engine.
+`MainEngine.get_account_pnl()` compares cached account equity to a baseline (see `_ACCOUNT_PNL_INIT_MOCK_DEFAULT` / `_ACCOUNT_PNL_INIT_REAL_DEFAULT` in `engine_main.py`) and powers `GET /account/pnl` for the UI. There is no drawdown / auto-stop engine.
 
 ---
 

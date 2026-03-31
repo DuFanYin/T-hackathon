@@ -99,8 +99,10 @@ _FALLBACK_PAIR_RULES: dict[str, dict] = {
     "ZENUSDT":         {"price_precision": 3, "amount_precision": 2, "mini_order": 10.0},
 }
 
-# Default notional baseline for PnL % in UI (matches prior RiskEngine default).
-_ACCOUNT_PNL_INIT_DEFAULT = 1000000.0
+# Default notional baseline for PnL % in UI.
+# Use different baselines per mode so mock/paper runs look intuitive in the dashboard.
+_ACCOUNT_PNL_INIT_MOCK_DEFAULT = 50_000.0
+_ACCOUNT_PNL_INIT_REAL_DEFAULT = 1_000_000.0
 
 
 class MainEngine:
@@ -131,7 +133,14 @@ class MainEngine:
         self.market_engine = MarketEngine(main_engine=self)
         self.gateway_engine = GatewayEngine(main_engine=self, env_mode=self.env_mode)
         self.strategy_engine = StrategyEngine(main_engine=self)
-        self._account_pnl_init: float = _ACCOUNT_PNL_INIT_DEFAULT
+        # Baseline for account-level PnL% in the UI.
+        # - mock: smaller baseline (typical paper account)
+        # - real/live: competition-style baseline
+        self._account_pnl_init: float = (
+            _ACCOUNT_PNL_INIT_REAL_DEFAULT
+            if self.env_mode in ("real", "live")
+            else _ACCOUNT_PNL_INIT_MOCK_DEFAULT
+        )
         self.write_log("init: engines constructed", level="INFO", source="System")
 
         # One-time discovery with retries + fallback.
@@ -295,13 +304,65 @@ class MainEngine:
                 total += free + lock
         return total
 
+    def _parse_net_liq_usd(self, bal: dict[str, Any] | None) -> float:
+        """
+        Estimate account net liquidation value in USD terms from cached wallet balances.
+
+        - Cash-like assets (USD/USDT/BUSD) are summed as Free+Lock.
+        - Non-cash assets are valued using the latest cached MarketEngine price for <ASSET>USDT.
+          (If price is missing, that asset contributes 0 to the estimate.)
+        """
+        if not bal or not isinstance(bal, dict):
+            return 0.0
+        wallet = bal.get("Wallet") or bal.get("SpotWallet")
+        if not wallet or not isinstance(wallet, dict):
+            return 0.0
+
+        cash_assets = {"USD", "USDT", "BUSD"}
+        total = 0.0
+
+        me = getattr(self, "market_engine", None)
+
+        for asset, entry in wallet.items():
+            if not isinstance(asset, str) or not isinstance(entry, dict):
+                continue
+            sym = asset.strip().upper()
+
+            free = float(entry.get("Free") or entry.get("free") or 0)
+            lock = float(entry.get("Lock") or entry.get("lock") or 0)
+            qty = free + lock
+            if qty <= 0:
+                continue
+
+            if sym in cash_assets:
+                total += qty
+                continue
+
+            if sym in ("USDⓈ",):  # defensive: some vendors use weird stablecoin labels
+                total += qty
+                continue
+
+            # Mark-to-market using <COIN>USDT if we have a cached symbol snapshot.
+            # This is an estimate (uses latest bar close / cached ticker update).
+            price = 0.0
+            if me is not None and hasattr(me, "get_symbol"):
+                sd = me.get_symbol(f"{sym}USDT")
+                lp = float(getattr(sd, "last_price", 0.0) or 0.0) if sd is not None else 0.0
+                if lp > 0:
+                    price = lp
+            if price > 0:
+                total += qty * price
+
+        return total
+
     def get_account_pnl(self) -> dict[str, float]:
         """
         Equity and PnL vs a fixed baseline for the control UI.
         Returns: { equity, init_balance, pnl, pnl_pct }
         """
         bal = self.gateway_engine.get_cached_balance()
-        equity = self._parse_equity_usd(bal)
+        # Net liquidation estimate (cash + mark-to-market of coin balances).
+        equity = self._parse_net_liq_usd(bal)
         init = self._account_pnl_init
         if init <= 0:
             return {"equity": equity, "init_balance": init, "pnl": 0.0, "pnl_pct": 0.0}
